@@ -95,8 +95,8 @@ void set_muxconf_regs_late(void);
 //#define GOSSAMER_MIN_DEAD_BOOT_SOC_NONE	(10)
 
 // Note gossamer should use lower thresholds for DEAD_BOOT_SOC  USB and WALL, original test case spec 15,12
-#define GOSSAMER_MIN_DEAD_BOOT_SOC_USB	(15)	/* % as per the test case spec */
-#define GOSSAMER_MIN_DEAD_BOOT_SOC_WALL	(12)	/* % as per the test case spec */
+#define GOSSAMER_MIN_DEAD_BOOT_SOC_USB	(9)	/* note that android will */
+#define GOSSAMER_MIN_DEAD_BOOT_SOC_WALL	(6)	/* shutdown at 4%         */
 
 // This voltage is set higher than soc threshold for booting, back door in case gg error
 #if HAS_BQ27520_BATTERY_MODEL

@@ -5,7 +5,7 @@ Download and install toolchain from:
 
 mkdir NOOK
 cd NOOK
-tar xvfz /path/to/nook2_1-2.tgz
+tar xvfz <oss_distribution_tarball>.tgz
 
 export ARCH=arm
 export CROSS_COMPILE=arm-none-linux-gnueabi-
