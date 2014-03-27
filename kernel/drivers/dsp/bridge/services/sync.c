@@ -204,6 +204,7 @@ DSP_STATUS SYNC_SetEvent(struct SYNC_OBJECT *hEvent)
 		spin_unlock_irqrestore(&hEvent->sync_lock, flags);
 	} else {
 		status = DSP_EHANDLE;
+		WARN_ON(1);
 	}
 	return status;
 }
@@ -338,6 +339,7 @@ DSP_STATUS SYNC_DeleteCS(struct SYNC_CSOBJECT *hCSObj)
 		MEM_FreeObject(pDPCCSObj);
 	} else {
 		status = DSP_EHANDLE;
+		WARN_ON(1);
 	}
 
 	return status;
@@ -356,7 +358,9 @@ DSP_STATUS SYNC_EnterCS(struct SYNC_CSOBJECT *hCSObj)
 			status = DSP_EFAIL;
 			WARN_ON(1);
 			DBC_Assert(0);
-		} else if (down_interruptible(&pCSObj->sem)) {
+		} else if (down_killable(&pCSObj->sem)) {
+			/* Nobody ever checks this return code, so try to
+			   make it as difficult as possible to get here */
 			status = DSP_EFAIL;
 			WARN_ON(1);
 		}
@@ -372,6 +376,7 @@ DSP_STATUS SYNC_EnterCS(struct SYNC_CSOBJECT *hCSObj)
 		}
 	} else {
 		status = DSP_EHANDLE;
+		WARN_ON(1);
 	}
 
 	return status;
@@ -388,6 +393,8 @@ DSP_STATUS SYNC_InitializeCS(OUT struct SYNC_CSOBJECT **phCSObj)
 	/* Allocate memory for sync CS object */
 	MEM_AllocObject(pCSObj, struct SYNC_CSOBJECT, SIGNATURECS);
 	if (pCSObj != NULL)
+		/* TODO: This should use the other style mutex
+		   (with mutex_init()) for better debugging */
 		init_MUTEX(&pCSObj->sem);
 	else
 		status = DSP_EMEMORY;

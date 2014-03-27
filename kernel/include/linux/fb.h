@@ -586,7 +586,7 @@ struct fb_pixmap {
 #ifdef CONFIG_FB_DEFERRED_IO
 struct fb_deferred_io {
 	/* delay between mkwrite and deferred handler */
-	unsigned long delay;
+	long delay;
 	struct mutex lock; /* mutex that protects the page list */
 	struct list_head pagelist; /* list of touched pages */
 	/* callback */

@@ -165,6 +165,7 @@ struct mmc_omap_host {
 	struct timer_list	inact_timer;
 	struct	omap_mmc_platform_data	*pdata;
 	int			shutdown;
+	unsigned int		card_sleep;/*emmc testing*/
 };
 
 struct omap_hsmmc_regs {
@@ -177,6 +178,8 @@ struct omap_hsmmc_regs {
 	u32 sysctl;
 };
 static struct omap_hsmmc_regs hsmmc_ctx[3];
+
+
 
 static void omap2_hsmmc_save_ctx(struct mmc_omap_host *host)
 {
@@ -1244,6 +1247,7 @@ static int __init omap_mmc_probe(struct platform_device *pdev)
 	host->clks_enabled = 0;
 	host->off_counter = 0;
 	host->inactive = 0;
+	host->card_sleep = 0;
 
 	host->iclk = clk_get(&pdev->dev, "mmchs_ick");
 	if (IS_ERR(host->iclk)) {
@@ -1427,6 +1431,7 @@ static int omap_mmc_remove(struct platform_device *pdev)
 static int omap_mmc_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	int ret = 0;
+	int err = 0;
 	struct mmc_omap_host *host = platform_get_drvdata(pdev);
 
 	if (host && host->suspended)
@@ -1434,6 +1439,21 @@ static int omap_mmc_suspend(struct platform_device *pdev, pm_message_t state)
 
 	if (host) {
 		host->suspended = 1;
+
+		if (host->card_sleep){
+			dev_dbg(mmc_dev(host->mmc),"has been in sleep status\n");
+		}
+		else if (mmc_card_can_sleep(host->mmc)){
+			err = mmc_card_sleep(host->mmc);
+
+			if (err){
+				dev_dbg(mmc_dev(host->mmc),"MMC sleep command CMD5 return error\n");
+			}
+			else{
+				host->card_sleep = 1;
+			}
+		}
+
 		if (host->pdata->suspend) {
 			ret = host->pdata->suspend(&pdev->dev,
 						host->slot_id);
@@ -1490,10 +1510,24 @@ static int omap_mmc_resume(struct platform_device *pdev)
 	int ret = 0;
 	struct mmc_omap_host *host = platform_get_drvdata(pdev);
 
-	if (host && !host->suspended)
+	if (host && !host->suspended){
+
+		if (host->card_sleep){/*mmc is sleeping but mmc regulator  power on*/
+
+			if (mmc_card_can_sleep(host->mmc))
+				mmc_card_awake(host->mmc);
+
+			host->card_sleep = 0;
+		}
 		return 0;
+	}
 
 	if (host) {
+
+		if (host->card_sleep){
+			host->card_sleep = 0;
+		}
+
 		if (host->pdata->resume) {
 			ret = host->pdata->resume(&pdev->dev, host->slot_id);
 			if (ret)

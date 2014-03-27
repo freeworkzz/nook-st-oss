@@ -1581,6 +1581,7 @@ int dram_init(void)
 	MUX_VAL(CP(GPMC_D12),       (IEN  | PTU | EN  | M4)) /*GPIO48 HOME buttoni externally pulled up */\
 	MUX_VAL(CP(GPMC_nBE0_CLE),  (IDIS | PTD | EN  | M4)) /*GPIO60  -> NC */\
     MUX_VAL(CP(GPMC_nWP),       (IDIS | PTD | EN  | M4)) /*GPIO62  -> NC */\
+	MUX_VAL(CP(CAM_D1 ),        (IEN | PTD | WAKEUP_EN | DIS | M4)) /*GIO-100 -> BAT-INTERRUPT  */\
 	MUX_VAL(CP(CAM_D2 ),        (IDIS | PTD | EN  | M4)) /*GIO-101 -> NC */\
 	MUX_VAL(CP(CAM_D11),        (IEN  | PTD | EN  | M4)) /*GIO-110 -> NC */\
 	MUX_VAL(CP(CSI2_DY0),       (IEN  | PTD | DIS | M4)) /*GIO-113 IR-INT externally pulled up */\

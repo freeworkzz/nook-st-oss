@@ -286,7 +286,7 @@ config MAX9635
 
 config ENCORE_MODEM_MGR
     bool "Encore Modem Manager"
-    default y
+    default n
     ---help---
     Provides an interface for managing the modem power state on an Encore EVT1a board.
 

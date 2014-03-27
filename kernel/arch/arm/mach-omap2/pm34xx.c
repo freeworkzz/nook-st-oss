@@ -66,6 +66,8 @@
 
 static int regset_save_on_suspend;
 
+unsigned int dbg_reg[4];
+
 /* Function pointer need to be called from idle and suspend/resume path */
 static int (*core_off_notification)(bool);
 
@@ -660,6 +662,14 @@ void omap_sram_idle(void)
 	if (regset_save_on_suspend)
 		pm_dbg_regset_save(1);
 
+
+	/* DEBUG: Dump core register */
+	dbg_reg[0] = cm_read_mod_reg(CORE_MOD, CM_FCLKEN1);
+	dbg_reg[1] = cm_read_mod_reg(CORE_MOD, OMAP3430ES2_CM_FCLKEN3);
+	dbg_reg[2] = cm_read_mod_reg(CORE_MOD, CM_ICLKEN1);
+	dbg_reg[3] = cm_read_mod_reg(CORE_MOD, CM_ICLKEN3);
+
+
 	/*
 	 * omap3_arm_context is the location where ARM registers
 	 * get saved. The restore path then reads from this
@@ -933,13 +943,22 @@ restore:
 			       pwrst->pwrdm->name, pwrst->next_state);
 			ret = -1;
 		}
+
 		set_pwrdm_state(pwrst->pwrdm, pwrst->saved_state);
 	}
-	if (ret)
+
+	if (ret) {
+		pm_dbg_print(1);
 		printk(KERN_ERR "Could not enter target state in pm_suspend\n");
+	}
 	else
 		printk(KERN_INFO "Successfully put all powerdomains "
 		       "to target state\n");
+
+	printk(KERN_ERR "CM_FCLKEN1 -> 0x%08X \n", dbg_reg[0]);
+	printk(KERN_ERR "CM_FCLKEN3 -> 0x%08X \n", dbg_reg[1]);
+	printk(KERN_ERR "CM_ICLKEN1 -> 0x%08X \n", dbg_reg[2]);
+	printk(KERN_ERR "CM_ICLKEN3 -> 0x%08X \n", dbg_reg[3]);
 
 	return ret;
 }

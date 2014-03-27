@@ -268,6 +268,39 @@ int bq27520_enable_batlspuen(void)
 }
 
 
+int bq27520_set_configuration_b(unsigned int mask,unsigned int value)
+{
+	u8 data[BQ27520_BLOCKDATA_LEN];
+
+    if (bq27520_get_data_block(BQ27520_OP_CFG_CLASS, BQ27520_OP_CFG_BLOCK, data)) {
+		printf("Error reading Operation configuration data block\n");
+		return -1;
+	}
+
+	if ((data[BQ27520_OP_CFG_B_OFF] & mask)!=value) {
+		data[BQ27520_OP_CFG_B_OFF] &= ~mask;
+        data[BQ27520_OP_CFG_B_OFF] |= value;
+
+		if (bq27520_i2c_write_reg(BQ27520_BLOCKDATA_BASE + BQ27520_OP_CFG_B_OFF, data[BQ27520_OP_CFG_B_OFF])) {
+			printf("Error erasing configuration b from config area\n");
+			return -1;
+		}
+        udelay(2 * 1000);
+		if (bq27520_write_data_block(data)) {
+			printf("Error writing back configuration b data block to data flash\n");
+			return -1;
+		}
+        udelay(500 * 1000);
+		printf("battery configuration b set to 0x%x\n", data[BQ27520_OP_CFG_B_OFF]);
+	}
+    else {
+        printf("battery configuration b was already set to 0x%x\n", data[BQ27520_OP_CFG_B_OFF]);
+    }
+
+	return 0;
+}
+
+
 int bq27520_impedance_track(int enable)
 {
 	int ret;

@@ -13,21 +13,9 @@
 #include <asm/io.h>
 #include <linux/wifi_tiwlan.h>
 
-#include <linux/i2c/twl4030.h>
-
-#define PM_RECEIVER                     TWL4030_MODULE_PM_RECEIVER
-#define ENABLE_VAUX2_DEDICATED          0x05
-#define ENABLE_VAUX2_DEV_GRP            0x20
-#define ENABLE_VAUX3_DEDICATED          0x03
-#define ENABLE_VAUX3_DEV_GRP            0x20
-
-#define t2_out(c, r, v) twl4030_i2c_write_u8(c, r, v)
-
 #define GOSSAMER_WIFI_PMENA_GPIO	22
 #define GOSSAMER_WIFI_IRQ_GPIO		15
 #define GOSSAMER_WIFI_EN_POW		16
-
-#define WLAN_PWR_ALWAYS_ON		(1)
 
 /* WIFI virtual 'card detect' status */
 static int gossamer_wifi_cd = 0;
@@ -37,29 +25,6 @@ static int gossamer_wifi_reset_state;
 
 static void (*wifi_status_cb)(int card_present, void *dev_id);
 static void *wifi_status_cb_devid;
-
-static int gossamer_wifi_v18io_power_enable_init(int enable)
-{
-	int return_value = 0;
-
-	if (enable) {
-		printk(KERN_DEBUG "Enabling VAUX for wifi \n");
-		return_value  = t2_out(PM_RECEIVER, ENABLE_VAUX2_DEDICATED,
-			       TWL4030_VAUX2_DEDICATED);
-		return_value |= t2_out(PM_RECEIVER, ENABLE_VAUX2_DEV_GRP,
-			       TWL4030_VAUX2_DEV_GRP);
-	} else {
-		printk(KERN_DEBUG "Disable VAUX for wifi \n");
-		return_value |= t2_out(PM_RECEIVER, 0,
-			       TWL4030_VAUX2_DEV_GRP);
-	}
-
-	if (0 != return_value)
-		printk(KERN_ERR "Enabling VAUX for wifi incomplete error: %d\n",
-		       return_value);
-
-	return return_value;
-}
 
 int omap_wifi_status_register(void (*callback)(int card_present, void *dev_id),
 			      void *dev_id)
@@ -94,11 +59,8 @@ EXPORT_SYMBOL(gossamer_wifi_set_carddetect);
 
 int gossamer_wifi_power(int on)
 {
-	/* keep VAUX powered during operation */
-	gossamer_wifi_v18io_power_enable_init(WLAN_PWR_ALWAYS_ON);
-
 	/* VSYS-WLAN also enabled */
-	gpio_direction_output(GOSSAMER_WIFI_EN_POW, WLAN_PWR_ALWAYS_ON);
+	gpio_direction_output(GOSSAMER_WIFI_EN_POW, on);
 
 	/* only WLAN_EN is driven during power-up/down */
 	gpio_direction_output(GOSSAMER_WIFI_PMENA_GPIO, on);

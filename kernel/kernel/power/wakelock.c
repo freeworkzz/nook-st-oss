@@ -263,6 +263,18 @@ static long has_wake_lock_locked(int type)
 	return max_timeout;
 }
 
+long has_wake_lock_debug(int type)
+{
+  	long ret;
+	unsigned long irqflags;
+	spin_lock_irqsave(&list_lock, irqflags);
+	ret = has_wake_lock_locked(type);
+	if (ret && type == WAKE_LOCK_SUSPEND)
+		print_active_locks(type);
+	spin_unlock_irqrestore(&list_lock, irqflags);
+	return ret;
+}
+
 long has_wake_lock(int type)
 {
 	long ret;
@@ -328,6 +340,13 @@ static DEFINE_TIMER(expire_timer, expire_wake_locks, 0, 0);
 static int power_suspend_late(struct platform_device *pdev, pm_message_t state)
 {
 	int ret = has_wake_lock(WAKE_LOCK_SUSPEND) ? -EAGAIN : 0;
+        unsigned long irqflags;
+        if (ret)
+        {
+            spin_lock_irqsave(&list_lock, irqflags);
+            print_active_locks(WAKE_LOCK_SUSPEND);
+            spin_unlock_irqrestore(&list_lock, irqflags);
+        }
 #ifdef CONFIG_WAKELOCK_STAT
 	wait_for_wakeup = 1;
 #endif

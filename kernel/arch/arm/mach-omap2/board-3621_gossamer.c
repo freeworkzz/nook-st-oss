@@ -383,11 +383,19 @@ static struct regulator_init_data gossamer_vmmc1 = {
 static struct regulator_init_data gossamer_vmmc2 = {
 	.constraints = {
 		.min_uV			= 1850000,
-		.max_uV			= 1850000,
+		/* This is a virtual regulator on TPS65921, so we can
+		 * write anything that will please regulator FW.
+		 * Apparently ROM code sometimes leaves VMMC2=3.15V,
+		 * yet we restrict it to 1.8V. This causes the regulator
+		 * framework to reject all updates, and more importantly,
+		 * to return errors for all voltage orations.
+		 */
+		.max_uV			= 3150000,
 		.apply_uV		= true,
 		.valid_modes_mask	= REGULATOR_MODE_NORMAL
 					| REGULATOR_MODE_STANDBY,
-		.valid_ops_mask		= REGULATOR_CHANGE_MODE
+		.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+					| REGULATOR_CHANGE_MODE
 					| REGULATOR_CHANGE_STATUS,
 	},
 	.num_consumer_supplies  = 1,
@@ -583,7 +591,7 @@ static struct twl4030_resconfig twl4030_rconfig[] __initdata = {
 	{ .resource = RES_VDD2, .devgroup = DEV_GRP_P1,
 		.type = 3, .type2 = 1, .remap_sleep = RES_STATE_OFF },
 	{ .resource = RES_REGEN, .devgroup = DEV_GRP_ALL, .type = 2,
-		.type2 = 1, .remap_sleep = RES_STATE_SLEEP },
+		.type2 = 1, .remap_sleep = RES_STATE_OFF },
 	{ .resource = RES_NRES_PWRON, .devgroup = DEV_GRP_ALL, .type = 0,
 		.type2 = 1, .remap_sleep = RES_STATE_SLEEP },
 	{ .resource = RES_CLKEN, .devgroup = DEV_GRP_ALL, .type = 3,

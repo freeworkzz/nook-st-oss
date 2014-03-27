@@ -45,6 +45,8 @@
 #define BQ27520_OP_CFG_C_OFF   (0x0C)
 #define BQ27520_BATLSPUEN_MASK (0x20)
 
+#define BQ27520_OP_CFG_B_OFF    (0x09)
+
 
 int bq27520_battery_present(void);
 int bq27520_get_state_of_charge(u16 * soc);

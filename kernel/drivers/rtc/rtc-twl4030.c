@@ -188,7 +188,7 @@ static int twl4030_rtc_update_irq_enable(struct device *dev, unsigned enabled)
 static int twl4030_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
 	unsigned char rtc_data[ALL_TIME_REGS + 1];
-	int ret;
+	int ret, i;
 	u8 uninitialized_var(save_control);
 
 	memset(rtc_data, 0, (ALL_TIME_REGS + 1));
@@ -203,12 +203,14 @@ static int twl4030_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	if (ret < 0)
 		return ret;
 
-	ret = twl4030_i2c_read(TWL4030_MODULE_RTC, rtc_data,
-			       REG_SECONDS_REG, ALL_TIME_REGS);
+	for(i = 0; i < ALL_TIME_REGS; i++)
+	{
+		ret = twl4030_i2c_read(TWL4030_MODULE_RTC, &rtc_data[i], REG_SECONDS_REG + i, 1);
 
-	if (ret < 0) {
-		dev_err(dev, "rtc_read_time error %d\n", ret);
-		return ret;
+		if (ret < 0) {
+			dev_err(dev, "rtc_read_time error %d at i=%d\n", ret, i);
+			return ret;
+		}
 	}
 
 	tm->tm_sec = bcd2bin(rtc_data[0]);

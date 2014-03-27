@@ -81,9 +81,6 @@
 #if defined(CONFIG_FB_OMAP3EP_DRIVE_EPAPER_PANEL_GPMC)
 #include "gpmc_config.h"
 #endif
-
-#define EMPTY_FBSYNC
-
 static int deferred_io_modparam = -1;
 module_param_named(deferred_io, deferred_io_modparam, int, S_IRUGO);
 MODULE_PARM_DESC(deferred_io, "Set deferred I/O timeout in milliseconds");
@@ -259,19 +256,62 @@ static struct device_attribute *epd_sysfs_attrs[] = {
 	NULL
 };
 
+int omap3epfb_send_recovery_signal()
+{
+	struct task_struct *p;
+	bool found = false;
+	int st = -1;
+
+	read_lock(&tasklist_lock);
+	for_each_process(p) {
+		if ( strcmp(p->comm, "omap-edpd.elf") == 0) {
+			found = true;
+			break;
+		}
+	}
+	read_unlock(&tasklist_lock);
+
+	if (found) {
+		/* send recovery signal */
+		struct siginfo sig_info;
+		memset(&sig_info, 0, sizeof(struct siginfo));
+		sig_info.si_signo = SIGUSR1;
+		sig_info.si_code = SI_KERNEL;
+		st = send_sig_info(SIGUSR1, &sig_info, p);
+		pr_info("Sent sleep-awake signal to daemon:%d!\n", st);
+		if (st < 0)
+			printk("Error sending sleep-awake signal to daemon\n");
+	}
+
+	return st;
+}
 
 int omap3epfb_reqq_push_back_async(struct fb_info *info,
 					const struct omap3epfb_update_area *a)
 {
 	struct omap3epfb_par *par = info->par;
 	int st = 0;
+	static time_t prev_nobufs_time = -1;
+	long temp_time;	/* ms */
 
 	BUG_ON(!a);
 
 	spin_lock(&par->reqq.xi_lock);
-	if ((par->reqq.wi - par->reqq.ri) == OMAP3EPFB_REQQ_DEPTH)
+	if ((par->reqq.wi - par->reqq.ri) == OMAP3EPFB_REQQ_DEPTH) {
 		st = -ENOBUFS;
-	else {
+		temp_time = CURRENT_TIME.tv_sec * 1000 + CURRENT_TIME.tv_nsec/1000000;
+		if (prev_nobufs_time != -1) {
+			if (temp_time - prev_nobufs_time >= FULL_QUEUE_PERIOD
+					|| par->num_missed_subframes >= SLEEPAWAKE_MISSED_THRESHOLD) {
+				pr_info("Not removed request from reqq from daemon for %ldms\n ",
+					temp_time - prev_nobufs_time);
+				omap3epfb_send_recovery_signal();
+				prev_nobufs_time = temp_time;
+			}
+		} else
+			prev_nobufs_time = temp_time;
+	} else {
+		prev_nobufs_time = -1;
 		par->reqq.bufs[par->reqq.wi++ & OMAP3EPFB_REQQ_ITEM_IMASK] = *a;
 
 		if(par->reqq.bufs[(par->reqq.wi-1) & OMAP3EPFB_REQQ_ITEM_IMASK].wvfid == DSP_PM_AWAKE)
@@ -1338,6 +1378,10 @@ static int __init omap3epfb_probe(struct platform_device *pdev)
 	init_waitqueue_head(&par->reqq.waitreq);
 	spin_lock_init(&par->reqq.xi_lock);
 	par->reqq.cmd_in_queue = 0;
+
+#if defined(OMAP3EPFB_GATHER_STATISTICS)
+	par->stamp_mask = 0;
+#endif
 
 	memset(par->pseudo_palette, 0, sizeof(par->pseudo_palette));
 

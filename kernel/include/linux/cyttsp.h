@@ -88,7 +88,7 @@
  * use this define if update to the TTSP Device is desired
  */
 /* Enable FW update via bootloader */
-#define CY_INCLUDE_LOAD_FILE
+//#define CY_INCLUDE_LOAD_FILE
 
 /* define if force new load file for bootloader load */
 /*

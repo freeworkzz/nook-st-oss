@@ -67,6 +67,7 @@
 #define OMAP3EPFB_WVFID_X1		5
 #define OMAP3EPFB_WVFID_X2		6
 #define OMAP3EPFB_WVFID_NUM		(OMAP3EPFB_WVFID_X2 + 1)
+#define OMAP3EPFB_WVFID_VU		128
 #define OMAP3EPFB_WVFID_AUTO		256
 
 /* Out-of-band flag in wvid field: STRICTLY FOR PRIVATE USE! */
@@ -128,6 +129,15 @@ struct omap3epfb_epd_fixpar {
 #define EPD_BORDER_BLACK 1
 #define EPD_BORDER_WHITE 2
 
+#define FULL_QUEUE_PERIOD	500 /* ms */
+
+/*
+ * When missed-subframes counter for _current_ screen sequence
+ * (par->num_missed_subframes) becomes greater than this value, then we
+ * most probably have hit OMAPS00238228.
+ */
+#define SLEEPAWAKE_MISSED_THRESHOLD	15
+
 /*
  * EPD-related user-configurable parameters.
  */
@@ -182,6 +192,8 @@ struct omap3epfb_statistics {
 	unsigned int total_missed_subf; /* total missed subframes */
 //!!!!! max_missed_subf is not used DO NOT REMOVE IT
 	unsigned int max_missed_subf;	/* max missed per screen sequence */
+	unsigned long pre_blit_latency; /* pre-blitter update latency in us */
+	unsigned long full_latency; /* full update latency in us */
 };
 
 

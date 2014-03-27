@@ -144,6 +144,7 @@ static void rect_dump(struct omap3epfb_update_area *a)
 	static const char *wvfid_str[OMAP3EPFB_WVFID_NUM] = {
 		"GC", "GU", "DU", "A2", "GL", "X1", "X2"
 	};
+	static const char *wvfm_vl_mode = "VU"; 
 	static const char *wvfm_auto_mode = "AT"; 
 	static const char *wvfm_undefined = "XX"; 
 	char const *txt = wvfm_undefined;
@@ -152,6 +153,8 @@ static void rect_dump(struct omap3epfb_update_area *a)
 		txt =  wvfid_str[a->wvfid];
 	if (a->wvfid == OMAP3EPFB_WVFID_AUTO)
 		txt = wvfm_auto_mode;
+	if (a->wvfid == OMAP3EPFB_WVFID_VU)
+		txt = wvfm_vl_mode;
 
         printk("%d,%d -> %d,%d = %s thres=%d\n", a->x0, a->y0, a->x1, a->y1, txt, a->threshold);
 }
@@ -261,6 +264,7 @@ static bool batch_update(struct fb_info *info, struct omap3epfb_update_area *p)
 static void update_effect(struct omap3epfb_par *par, int index)
 {
 	static const char wvfid_char[OMAP3EPFB_WVFID_NUM] = "CUDAL12";
+	static const char wvfid_char_vu[1] = "V";
 	struct omap3epfb_area *area = NULL;
 
 	if ((index < 0) || (index >= EFFECT_ARRAY_SIZE))
@@ -271,6 +275,8 @@ static void update_effect(struct omap3epfb_par *par, int index)
 	{
 		if ((area->effect_area.wvfid >= 0) && (area->effect_area.wvfid < OMAP3EPFB_WVFID_NUM))
 			par->effect_active_debug[index] = wvfid_char[area->effect_area.wvfid];
+		else if (area->effect_area.wvfid == OMAP3EPFB_WVFID_VU)
+			par->effect_active_debug[index] = wvfid_char_vu[0];
 		else
 			par->effect_active_debug[index] = '*';
 
@@ -283,7 +289,6 @@ static void update_effect(struct omap3epfb_par *par, int index)
 	}
 }
 
-#define MAX_Y_DIFF 500
 
 // Fast line compare doing 4 bytes at a time
 // Faster than the current memcmp() -- 4 times
@@ -301,45 +306,81 @@ inline int line_diff(void *p1, void *p2, int length)
 	return 0;
 }
 
-static int buffer_difference_height(struct fb_info *info)
+
+// Check if the difference between two buffers is greater than or equal to a given
+// percent.  Returns TRUE if this condition is met; FALSE otherwise.
+// NOTE: this algorithm is optimized for percent values higher than 50 because
+//       in EPD displays it does not make sense to flash the screen in auto mode
+//       if a small percent has changed.  For those cases, it is better to use the
+//       update areas implemented in this driver.
+
+static bool buffer_difference_ge_threshold(struct fb_info *info, int percent_threshold)
 {
 	struct omap3epfb_par *par = info->par;
-	int buffer_size = info->fix.line_length * par->mode.vyres;
+	int y_res = par->mode.vyres;
+	int line_length = info->fix.line_length;
+	int buffer_size = line_length * y_res;
 	int top, bottom;
 	int line = 0;
+	int max_y_equal = (y_res * (100 - percent_threshold)) / 100;
+	int y_equal = 0;
+	bool result = true;
 
 	u8 *front = info->screen_base;
 	u8 *back = info->screen_base + buffer_size;
 
-	for (top = 0; top < par->mode.vyres; top++)
+	// Percent of 0 or negative always returns TRUE and the screen will flash
+	// Same for percent greater than 100 since it's invalid
+	if ((percent_threshold <= 0) || (percent_threshold > 100))
 	{
-		if (line_diff(&front[line], &back[line], info->fix.line_length))
+		return true;
+	}
+
+	for (top = 0; top < y_res; top++)
+	{
+		if (line_diff(&front[line], &back[line], line_length))
 		{
+			// Found a difference; now go check from the bottom
 			break;
 		}
-		// Check if we can bail early
-		if (top > MAX_Y_DIFF)
-			break;
-		line += info->fix.line_length;
-	}
-	bottom =  par->mode.vyres-1;
-	if (top <= MAX_Y_DIFF)
-	{
-		line = (par->mode.vyres-1) * info->fix.line_length;
-		for (bottom = par->mode.vyres-1; bottom > top; bottom--)
+		// Check if the number of equal lines passed the threshold; if so,
+		// we are done and the result is FALSE
+		y_equal++;
+		if (y_equal > max_y_equal)
 		{
-			if (line_diff(&front[line], &back[line], info->fix.line_length))
+			result = false;
+			break;
+		}
+		line += line_length;
+	}
+	bottom =  y_res-1;
+	// Now start from the bottom, if we need to continue to check
+	if (result)
+	{
+		line = (y_res-1) * line_length;
+		for (bottom = y_res-1; bottom > top; bottom--)
+		{
+			if (line_diff(&front[line], &back[line], line_length))
 			{
+				// Found a difference, and we never went above the
+				// threshold of equal lines.  Stop checking.
+				// Result will be TRUE.
 				break;
 			}
-			// Check if we can bail early
-			if ((bottom-top) < MAX_Y_DIFF)
+			// Check if the number of equal lines passed the threshold;
+			// if so, we are done and the result is FALSE
+			y_equal++;
+			if (y_equal > max_y_equal)
+			{
+				result = false;
 				break;
-			line -= info->fix.line_length;
+			}
+			line -= line_length;
 		}
 	}
 
-	return (bottom-top);
+	DEBUG_LOG(DEBUG_LEVEL5,"buffer difference: threshold = %d%%, top = %d, bottom = %d, max_y_equal = %d, y_equal = %d, result = %s\n", percent_threshold, top, bottom, max_y_equal, y_equal, result ? "TRUE" : "FALSE");
+	return (result);
 }
 
 
@@ -557,7 +598,7 @@ int user_update(struct fb_info *info, struct omap3epfb_update_area *p)
 	if ((par->refresh_percent > 0) && (percent >= par->refresh_percent))
 	{
 		// Check again if this needs to be flushing.
-		if (buffer_difference_height(info) > MAX_Y_DIFF)
+		if (buffer_difference_ge_threshold(info, par->refresh_percent))
 		{
 			DEBUG_REGION(DEBUG_LEVEL1, p,"process FULLSCREEN %d%% AUTO = ", percent);
 			p->x0 = p->y0 = 0;
@@ -674,16 +715,32 @@ static ssize_t store_refresh(struct device *device,
 			  const char *buf, size_t count)
 {
 	struct fb_info *fb = dev_get_drvdata(device);
+	struct omap3epfb_par *par = fb->par;
+	int index = FIRST_USER_REGION;
+	struct omap3epfb_area *area = NULL;
 	int clear  = simple_strtoul(buf, NULL, 0);
 
-	if (clear > 1 || clear < 0)
+	if (clear > 2 || clear < 0)
 		return -EINVAL;
 
 	omap3epfb_reqq_purge(fb);
-	if (clear == 1)
-		omap3epfb_update_screen(fb, OMAP3EPFB_WVFID_GC, false);
-	else
-		omap3epfb_update_screen(fb, OMAP3EPFB_WVFID_AUTO, false);
+	switch (clear)
+	{
+		case 0: omap3epfb_update_screen(fb, OMAP3EPFB_WVFID_AUTO, false);
+			break;
+
+		case 1: omap3epfb_update_screen(fb, OMAP3EPFB_WVFID_GC, false);
+			break;
+
+		case 2: area = &par->effect_array[index];
+			if (!(area->effect_flags & (EFFECT_ONESHOT | EFFECT_ACTIVE | EFFECT_CLEAR)))
+				break;
+			omap3epfb_update_area(fb, &area->effect_area);
+			break;
+
+		default:
+			omap3epfb_update_screen(fb, OMAP3EPFB_WVFID_AUTO, false);
+	}
 
 	return count;
 }

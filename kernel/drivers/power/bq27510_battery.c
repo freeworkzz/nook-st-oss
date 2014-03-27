@@ -372,7 +372,8 @@ static int bq27510_battery_rsoc(struct bq27510_device_info *di)
 	ret = bq27x10_read(BQ27510_REG_RSOC, &rsoc, 0, di);
 	if (ret) {
 		dev_err(di->dev, "error reading relative State-of-Charge\n");
-		return ret;
+		printk(KERN_INFO "gauge: %s read RSOC error ret=%d  SOC=%d\n", __FUNCTION__,ret,rsoc);
+		return 100;
 	}
 
     if (rsoc == 0 ) {
@@ -380,7 +381,13 @@ static int bq27510_battery_rsoc(struct bq27510_device_info *di)
             rsoc=100;
         }
     }
-    return rsoc;
+	if (rsoc < 0){
+		rsoc = 1;
+	}
+	else if (rsoc > 100)
+		rsoc = 100;
+
+	return rsoc;
 }
 
 /*

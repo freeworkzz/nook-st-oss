@@ -55,6 +55,43 @@
 
 /* ------------------------------------------------------------------------- */
 
+#if defined(OMAP3EPFB_GATHER_STATISTICS)
+static void omap3epfb_start_timestamp(struct omap3epfb_par *par)
+{
+	if (!test_and_set_bit(UPD_APP_REQUEST, &par->stamp_mask))
+		getnstimeofday(&par->update_timings[UPD_APP_REQUEST]);
+}
+
+static unsigned long omap3epfb_calc_latency(struct omap3epfb_par *par,
+		int dest, int end)
+{
+	BUG_ON(end < UPD_PRE_BLITTER || end > UPD_DSS_STARTING);
+	BUG_ON(dest < UPD_PB_LATENCY || dest > UPD_FULL_LATENCY);
+	par->update_timings[dest] = timespec_sub(par->update_timings[end],
+			par->update_timings[UPD_APP_REQUEST]);
+	return (par->update_timings[dest].tv_sec * 1000000 +
+			(par->update_timings[dest].tv_nsec / 1000));
+
+}
+static void omap3epfb_event_timestamp(struct omap3epfb_par *par, int id)
+{
+	BUG_ON(id <= UPD_APP_REQUEST || id > UPD_DSS_STARTING);
+	if (test_bit(id - 1, &par->stamp_mask)) {
+		if (!test_and_set_bit(id, &par->stamp_mask))
+			getnstimeofday(&par->update_timings[id]);
+	}
+}
+static void omap3epfb_store_latencies(struct omap3epfb_par *par)
+{
+	if (test_bit(UPD_DSS_STARTING, &par->stamp_mask)) {
+		par->stats.pre_blit_latency = omap3epfb_calc_latency(par,
+				UPD_PB_LATENCY, UPD_PRE_BLITTER);
+		par->stats.full_latency = omap3epfb_calc_latency(par,
+				UPD_FULL_LATENCY, UPD_DSS_STARTING);
+	}
+}
+#endif
+
 size_t omap3epfb_videomem_size(struct fb_info *info)
 {
 	struct omap3epfb_par *par = info->par;
@@ -644,6 +681,9 @@ static void omap3epfb_screen_sequence_task(struct work_struct *work)
 
 #if defined(OMAP3EPFB_GATHER_STATISTICS)
 	mb();
+	if (test_bit(UPD_DSS_STARTING, &par->stamp_mask))
+		par->stamp_mask = 0;
+
 	mutex_lock(&par->stats_mutex);
 	if (unlikely(par->num_missed_subframes)) {
 		par->stats.total_missed_subf += par->num_missed_subframes;
@@ -659,6 +699,11 @@ static void omap3epfb_screen_sequence_task(struct work_struct *work)
 	}
 	par->stats.num_screen_seqs++;
 	mutex_unlock(&par->stats_mutex);
+#endif
+
+#if defined(OMAP3EPFB_GATHER_STATISTICS)
+	/* reset here so that sleek-awake workaround doesn't get confused */
+	par->num_missed_subframes = 0;
 #endif
 
 	BUG_ON(waitqueue_active(&par->subfq.waitframe));
@@ -770,6 +815,11 @@ static void omap3epfb_check_dsp_work_task(struct work_struct *work)
 		mb();
 		resp = par->subfq.shwr.p->wq.bq_dsp2arm_last_resp - par->subfq.shrd.p->rq.bq_arm2dsp_last_req;
 		if(subf_queue_begin_inque(par) ) {
+
+#if defined(OMAP3EPFB_GATHER_STATISTICS)
+			omap3epfb_event_timestamp(par, UPD_DSS_STARTING);
+			omap3epfb_store_latencies(par);
+#endif
 			omap3epfb_run_screen_sequence(info);
 			break;
 		}
@@ -930,6 +980,12 @@ int omap3epfb_update_screen(struct fb_info *info, int wvfid, bool retry_req)
 int omap3epfb_update_area(struct fb_info *info, struct omap3epfb_update_area *area)
 {
 	int stat;
+	struct omap3epfb_par *par = info->par;
+
+#if defined(OMAP3EPFB_GATHER_STATISTICS)
+	mb();
+	omap3epfb_start_timestamp(par);
+#endif
 	stat = omap3epfb_update_area_versatile(info,area);
 #if 0
 	dev_dbg(info->device, "  winupd: x=[%d:%d], y=[%d:%d] wvf=%d, st=%d\n",
@@ -1022,19 +1078,28 @@ int omap3epfb_update_screen_bursty(struct fb_info *info)
 #elif defined(CONFIG_FB_OMAP3EP_PGFLIP_REPLACE)
 int omap3epfb_update_screen_bursty(struct fb_info *info)
 {
-	int stat;
+	int stat, i;
 
 	/*
 	 * Here Android is assumed to be using page flipping, and also
-	 * to be the only user requesting screen updates. This way we
-	 * can guarantee that nobody will insert a request between
-	 * our cancel and enqueue operations.
+	 * to be the only user requesting screen updates. But reqq is
+	 * also used for commands so we *cannot* guarantee that purging will
+	 * leave space for the next screen request. The best we can do is
+	 * try a few times and error out.
 	 */
 	omap3epfb_reqq_purge(info);
-	stat = omap3epfb_update_screen(info, OMAP3EPFB_WVFID_AUTO, false);
-	BUG_ON((stat == -EAGAIN) || (stat == -ENOBUFS));
+	for (stat = -EAGAIN, i = 5; stat && i > 0; i--) {
+		stat = omap3epfb_update_screen(info,
+					OMAP3EPFB_WVFID_AUTO, false);
+		if (stat)
+			msleep(1);
+	}
 
-	return 0;
+	if ((i == 0) && stat)
+		dev_err(info->device, "Could not post a page flip "
+					"(stat=%d)\n", stat);
+
+	return stat;
 }
 #endif
 
@@ -1247,7 +1312,9 @@ static int omap3epfb_bfb_push_async(struct fb_info *info,
 	struct omap3epfb_par *par = info->par;
 	int st = 0;
 	struct omap3epfb_bfb_queue_element *qe;
-mb();
+	static time_t prev_nobufs_time = -1;
+	long temp_time;	/* ms */
+	mb();
 	BUG_ON(!a);
 
 	spin_lock(&par->bfb.que.xi_lock);
@@ -1256,11 +1323,21 @@ mb();
 
 	if (((par->subfq.shrd.p->rq.bqwi - par->subfq.shwr.p->wq.bqri)
 							& ((OMAP3EPFB_BLITQ_ITEM_IMASK<<1)|1))
-										== OMAP3EPFB_BLITQ_DEPTH)
+										== OMAP3EPFB_BLITQ_DEPTH) {
 		st = -ENOBUFS;
-
-	else{
-
+		temp_time = CURRENT_TIME.tv_sec * 1000 + CURRENT_TIME.tv_nsec/1000000;
+		if (prev_nobufs_time != -1) {
+			if (temp_time - prev_nobufs_time >= FULL_QUEUE_PERIOD
+					|| par->num_missed_subframes >= SLEEPAWAKE_MISSED_THRESHOLD) {
+				pr_info("Not removed request from BQ from dsp for %ldms\n ",
+					temp_time - prev_nobufs_time);
+				omap3epfb_send_recovery_signal();
+				prev_nobufs_time = temp_time;
+			}
+		} else
+			prev_nobufs_time = temp_time;
+	} else {
+		prev_nobufs_time = -1;
 		//increment request id lower 4 bits is status
 		par->subfq.shrd.p->rq.bq_arm2dsp_last_req += ARM_DSP_WORK_CODE_INCR;
 
@@ -1364,6 +1441,11 @@ int omap3epfb_send_dsp_pm(struct fb_info *info, bool sleep,
 #endif
 			/*wake-up through daemon*/
 			st = omap3epfb_reqq_push_back_async(info, &area_d);
+			if (st == -ENOBUFS) {
+				pr_err("Error inserting a reqq item while wake-up, trying with alternate wake-up!\n");
+				omap3epfb_send_recovery_signal();
+				return st;
+			}
 			return st;
 		} else {
 			st = omap3epfb_bfb_push_async(info,area,0);
@@ -1380,6 +1462,10 @@ int omap3epfb_bfb_update_area(struct fb_info *info, struct omap3epfb_bfb_update_
 	struct omap3epfb_par *par = info->par;
 	int st = 0,st1;
 	
+#if defined(OMAP3EPFB_GATHER_STATISTICS)
+	mb();
+	omap3epfb_event_timestamp(par, UPD_PRE_BLITTER);
+#endif
 	st = omap3epfb_send_dsp_pm(info,false,area);
 
 #if 0

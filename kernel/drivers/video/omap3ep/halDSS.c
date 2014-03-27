@@ -47,6 +47,34 @@ void framedone_isr(void);
 #define VSYNC_MASK (1 << VSYNC_BITPOS)
 #define FRAMEDONE_MASK (1 << FRAMEDONE_BITPOS)
 
+#define DISPCIRQ_WAKEUP_MASK		(1u << 16)
+#define DISPCIRQ_SYNCLOSTDIGITAL	(1u << 15)
+#define DISPCIRQ_SYNCLOST		(1u << 14)
+#define DISPCIRQ_VID2ENDWINDOW		(1u << 13)
+#define DISPCIRQ_VID2FIFOUNDERFLOW	(1u << 12)
+#define DISPCIRQ_VID1ENDWINDOW		(1u << 11)
+#define DISPCIRQ_VID1FIFOUNDERFLOW	(1u << 10)
+#define DISPCIRQ_OCPERROR		(1u << 9)
+#define DISPCIRQ_PALETTEGAMMALOADING	(1u << 8)
+#define DISPCIRQ_GFXENDWINDOW		(1u << 7)
+#define DISPCIRQ_GFXFIFOUNDERFLOW	(1u << 6)
+#define DISPCIRQ_PROGRAMMEDLINENUMBER	(1u << 5)
+#define DISPCIRQ_ACBIASCOUNTSTATUS	(1u << 4)
+#define DISPCIRQ_EVSYNC_ODD		(1u << 3)
+#define DISPCIRQ_EVSYNC_EVEN		(1u << 2)
+#define DISPCIRQ_VSYNC			(1u << 1)
+#define DISPCIRQ_FRAMEDONE		(1u << 0)
+
+#define DISPCIRQ_ENABLED_MASK		( \
+			DISPCIRQ_SYNCLOST | \
+			DISPCIRQ_VID2FIFOUNDERFLOW | \
+			DISPCIRQ_VID1FIFOUNDERFLOW | \
+			DISPCIRQ_OCPERROR | \
+			DISPCIRQ_GFXFIFOUNDERFLOW | \
+			DISPCIRQ_VSYNC | \
+			DISPCIRQ_FRAMEDONE \
+					)
+
 #if defined(CONFIG_MACH_OMAP3430_EDP1)
   #error "Please review the DSI PLL initialization for OMAP3430!"
 #endif
@@ -68,9 +96,9 @@ irqreturn_t dss_isr(int irq, void *dontcare)
 
         //printk(KERN_DEBUG "dispc irq %08x\n", dispc_irqstatus);        
 
-	WARN(dispc_irqstatus & (1<<14), "DSS SYNCLOST IRQ\n");
-	WARN(dispc_irqstatus & (1<<9), "DSS OCPERR IRQ\n");
-	WARN(dispc_irqstatus & (1<<6), "DSS GFXFIFOUNDERFLOW IRQ\n");
+	if (dispc_irqstatus & DISPCIRQ_ENABLED_MASK & ~(DISPCIRQ_VSYNC|DISPCIRQ_FRAMEDONE)) {
+		printk(KERN_ERR "%s: IRQSTATUS=%08x\n", __func__, dispc_irqstatus);
+	}
 
 /*        if (dispc_irqstatus & VSYNC_MASK)
         {
@@ -90,7 +118,10 @@ irqreturn_t dss_isr(int irq, void *dontcare)
             dispc_irqstatus &= ~VSYNC_MASK;
 
 	    if (REG32_TEST_BIT(DISPC_CONTROL_OFFSET + DISPC_BASE, LCDENABLE_BITPOS)) {
-		line1_isr();
+		    if (!halDSS_check_go())
+			line1_isr();
+		    else
+			printk(KERN_ERR "DSS: too long IRQs off!\n");
 	    } else if (frame_done_fired) {
 		framedone_isr();
                 frame_done_fired = 0;
@@ -346,8 +377,8 @@ int halDSS_Init(void)
         
 
     REG32_WR(HALREG32_DISPC_LINE_NUMBER_OFFSET + REGBASE_DISPC, 100);
-    REG32_WR(HALREG32_DISPC_IRQSTATUS_OFFSET + REGBASE_DISPC, VSYNC_MASK | FRAMEDONE_MASK /*| VSYNC_MASK*/); // clear all interrupts
-    REG32_WR(HALREG32_DISPC_IRQENABLE_OFFSET + REGBASE_DISPC, VSYNC_MASK | FRAMEDONE_MASK /*| VSYNC_MASK */);
+    REG32_WR(HALREG32_DISPC_IRQSTATUS_OFFSET + REGBASE_DISPC, DISPCIRQ_ENABLED_MASK); // clear all interrupts
+    REG32_WR(HALREG32_DISPC_IRQENABLE_OFFSET + REGBASE_DISPC, DISPCIRQ_ENABLED_MASK);
 
     err = request_irq(INT_24XX_DSS_IRQ, dss_isr, IRQF_DISABLED, "dss-irq", NULL);
     if (err)

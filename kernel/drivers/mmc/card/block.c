@@ -35,6 +35,7 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
+#include <linux/mmc/mmc_log.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -347,6 +348,8 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 
 		brq.data.sg = mq->sg;
 		brq.data.sg_len = mmc_queue_map_sg(mq);
+
+        mmc_log_transaction((READ == rq_data_dir(req)) ? MMC_OP_READ : MMC_OP_WRITE, brq.cmd.arg, brq.data.blocks);
 
 		/*
 		 * Adjust the sg list so it is the same size as the

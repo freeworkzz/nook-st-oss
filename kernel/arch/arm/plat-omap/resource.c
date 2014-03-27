@@ -116,7 +116,9 @@ static int update_resource_level(struct shared_resource *resp)
 				max_constraint = user->level;
 
 		resp = resource_lookup("vdd1_opp");
+		mutex_lock(&resp->resource_mutex);
 		ret = update_resource_level(resp);
+		mutex_unlock(&resp->resource_mutex);
 
 		return ret;
 

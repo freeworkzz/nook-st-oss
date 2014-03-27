@@ -63,6 +63,22 @@ typedef enum {
 	DSP_WORK_CODE_INCR	= 0x10
 } DSP_WORK_CODE;
 
+#if defined(OMAP3EPFB_GATHER_STATISTICS)
+/*
+ * the enum below denotes the required indexation used when gathering
+ * update area video driver timings and latencies -
+ * see stamp_mask and update_timings under omap3epfb_par.
+ */
+enum {
+	UPD_APP_REQUEST,
+	UPD_PRE_BLITTER,
+	UPD_DSS_STARTING,
+	UPD_PB_LATENCY,
+	UPD_FULL_LATENCY,
+	UPD_NUM_ITEMS
+};
+#endif
+
 #define SUBFRAME_UNKN		0
 #define SUBFRAME_FIRST		1
 #define SUBFRAME_SECOND		2
@@ -189,6 +205,15 @@ struct omap3epfb_par {
 	/* various statistics presentable to user-space */
 	struct omap3epfb_statistics stats;
 
+	/* update area timestamps */
+	struct timespec update_timings[UPD_NUM_ITEMS];
+
+	/* stamp_mask is an atomic bit field used for
+	 * proper time stamping - bit field assignments
+	 * are enumerated with UPD_*
+	 */
+	unsigned long stamp_mask;
+
 	/* missed frame counter used by the IRQ */
 	unsigned int num_missed_subframes;
 
@@ -241,5 +266,7 @@ extern int omap3epfb_reqq_pop_front_async(struct fb_info *info,
 extern int omap3epfb_reqq_purge(struct fb_info *info);
 
 extern int omap3epfb_send_dsp_pm(struct fb_info *info,bool sleep,struct omap3epfb_bfb_update_area *area);
+
+extern int omap3epfb_send_recovery_signal(void);
 
 #endif	/* OMAP3EPFB_H */
