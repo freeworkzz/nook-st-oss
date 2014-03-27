@@ -6,12 +6,19 @@
 #define BQ27520_I2C_ADDR	(0x55)
 #define BQ27520_I2C_BUS_NUM	(0x01)
 
-#define BQ72520_REG_CONTROL     (0x00)
-#define BQ72520_CONTROL_STATUS   (0x0000)
+#define BQ27520_REG_CONTROL     (0x00)
+#define BQ27520_CONTROL_STATUS   (0x0000)
 
-#define BQ72520_CONTROL_DEVICE_TYPE   (0x0001)
-#define BQ72520_CONTROL_FW_VERSION   (0x0002)
-#define BQ72520_CONTROL_HW_VERSION   (0x0003)
+#define BQ27520_CONTROL_DEVICE_TYPE   (0x0001)
+#define BQ27520_CONTROL_FW_VERSION   (0x0002)
+#define BQ27520_CONTROL_HW_VERSION   (0x0003)
+#define BQ27520_CONTROL_DFS_VERSION  (0x001f)
+#define BQ27520_CONTROL_IT_ENABLE	 (0x0021)
+#define BQ27520_CONTROL_IT_DISABLE	 (0x0023)
+#define BQ27520_CONTROL_RESET		 (0x0041)
+
+#define BQ27520_CONTROL_STATUS_QEN   (0x0001)
+
 
 #define BQ27520_REG_STATE_OF_CHARGE	(0x2C)
 #define BQ27520_REG_VOLTAGE		(0x08)
@@ -52,7 +59,12 @@ int bq27520_get_normalized_impedance(u16 *nc);
 
 int bq27520_get_control_register(u16 control, u16 *data);
 int bq27520_get_data_block(int dbclass,int block, u8 *data);
+int bq27520_write_data_block(u8 *data);
 int bq27520_disable_batlspuen(void);
 int bq27520_enable_batlspuen(void);
+int bq27520_impedance_track(int enable);
+int bq27520_reset(void);
+int bq27520_impedance_track_enable(void);
+
 
 #endif /* _BQ27520_H_ */

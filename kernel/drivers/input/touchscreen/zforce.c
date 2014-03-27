@@ -765,15 +765,14 @@ static void zforce_touch_hw_init(int resume)
 			return;
 	}
 	gpio_direction_output(HAPT_ENABLE_GPIO, 0);
-	gpio_set_value(HAPT_ENABLE_GPIO, 0);
+	//No need to turn power off; as it is already off
+	//gpio_set_value(HAPT_ENABLE_GPIO, 0);
 	gpio_set_value(DEBUG_CLK_GPIO, 0);
-	gpio_set_value(DEBUG_DATA_GPIO, 0);
-
+	gpio_set_value(DEBUG_DATA_GPIO, 0); // data line doubles as 430 reset; pull reset low
+    gpio_set_value(HAPT_ENABLE_GPIO, 1);// apply power to touch
 	mdelay(10);
-    gpio_set_value(HAPT_ENABLE_GPIO, 1);
-
 	gpio_set_value(DEBUG_CLK_GPIO, 0);
-	gpio_set_value(DEBUG_DATA_GPIO, 1);
+	gpio_set_value(DEBUG_DATA_GPIO, 1);//de-assert reset
 
 	/* Clear events possibly logged in UART2 by
 	   the init procedure - this is a hack but
@@ -1109,12 +1108,6 @@ static int zforce_probe(struct i2c_client *client,
 		dev_err(&client->dev, "Unable to request version\n");
 	}
 
-	// Get LED Levels
-	if (send_level_request(tsc))
-	{
-		dev_err(&client->dev, "Unable to request levels\n");
-	}
-
 	// This will start sending touch events.
 	if (send_data_request(tsc))
 	{
@@ -1172,6 +1165,11 @@ static int zforce_remove(struct i2c_client *client)
 #if defined (CONFIG_MACH_OMAP3621_GOSSAMER)
 static int zforce_suspend(struct i2c_client *client, pm_message_t mesg)
 {
+	struct zforce *tsc = i2c_get_clientdata(client);
+	
+	disable_irq(tsc->irq);
+	flush_workqueue(zforce_wq);
+	gpio_set_value(DEBUG_DATA_GPIO, 0); // data line doubles as 430 reset; pull reset low
 	/*
 	 * disable power only if told to do so
 	 */
@@ -1183,6 +1181,12 @@ static int zforce_suspend(struct i2c_client *client, pm_message_t mesg)
 
 static int zforce_shutdown(struct i2c_client *client, pm_message_t mesg)
 {
+	struct zforce *tsc = i2c_get_clientdata(client);
+
+	dev_info(&client->dev, "ZforceDrvrShtdwn\n");
+	disable_irq(tsc->irq);
+	flush_workqueue(zforce_wq);	
+	gpio_set_value(DEBUG_DATA_GPIO, 0); // data line doubles as 430 reset; pull reset low
 	gpio_direction_output(HAPT_ENABLE_GPIO, 0);
 
 	return 0;
@@ -1201,6 +1205,8 @@ static int zforce_resume(struct i2c_client *client)
 		return 0;
 
 	zforce_touch_hw_init(1);
+	enable_irq(tsc->irq);
+
 	// TODO touch fw 2.0.0.13 and later will have default 
 	//      resolution and config to speed up suspend&resume
 	// TODO Therefore read version first and skip setting 
@@ -1218,7 +1224,7 @@ static int zforce_resume(struct i2c_client *client)
 	// Allow time for initial cal to complete
 	msleep(200);
 	
-	if (send_version_request(tsc) || send_level_request(tsc)) 
+	if (send_version_request(tsc)) 
 	{
 		dev_err(&client->dev, "Unable to request version or level data\n");
 	}

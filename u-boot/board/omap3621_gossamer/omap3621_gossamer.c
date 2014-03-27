@@ -1095,10 +1095,10 @@ void board_early_console(void)
         gossamer_button_rtc_ack();  
         tps65921_shutdown("short power press");
     }
-    
+
     gossamer_mmc_splash_reinit();
 
-    gossamer_charge();
+	gossamer_charge();
 
 #ifdef WATCHDOG_POWER_BUTTON_DISABLE
     printf("watchdog starting, power button inactive\n");
@@ -1106,6 +1106,7 @@ void board_early_console(void)
     tps65921_stopon_pwr_button(TPS65921_STOPON_DISABLE);
 #endif
 
+	bq27520_impedance_track_enable();
 	if (bq27520_disable_batlspuen()) {
 		printf("Something went wrong when trying to disable BATLSPUEN\n");
 	}

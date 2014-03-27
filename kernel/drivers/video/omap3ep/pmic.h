@@ -21,6 +21,12 @@ struct pmic_sess;
 #define PMIC_DEFAULT_DWELL_TIME_MS	1111
 #define PMIC_DEFAULT_VCOMOFF_TIME_MS	20
 
+#if defined(FB_OMAP3EP_PAPYRUS_PM_VZERO)
+  #define PAPYRUS_STANDBY_DWELL_TIME	4 /*sec*/
+#else
+  #define PAPYRUS_STANDBY_DWELL_TIME	0
+#endif
+
 #define WAKEUP_GPIO		(87)	/* active high */
 #define EN_CPLD_POW_GPIO	(85)	/* active high */
 #define CPLD_V_DET1_GPIO	(78)

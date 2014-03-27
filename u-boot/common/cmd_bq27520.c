@@ -32,10 +32,18 @@ int do_battery (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
     int bitno;
     int blkclass,blockno;
     static u8 block_data[BQ27520_BLOCKDATA_LEN];
-    int i;
+	static int block_load=0;
+    int i,j;
  
     if (argc == 4) {
-        if (0 == strncmp(argv[1], "block_read", 9)) {
+		if (0 == strcmp(argv[1], "block_modify")) {
+			i=simple_strtoul(argv[2], NULL, 10);
+			j=simple_strtoul(argv[3], NULL, 10);
+			printf("[0x%0x] = 0x%x (was 0x%x)\n",i,j,block_data[i]);
+			block_data[i]=j;
+		}
+		else
+        if (0 == strcmp(argv[1], "block_read")) {
             blkclass=simple_strtoul(argv[2], NULL, 10);
             blockno=simple_strtoul(argv[3], NULL, 10);
             bq27520_get_data_block(blkclass,blockno, block_data);
@@ -46,13 +54,45 @@ int do_battery (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
                 printf(" 0x%02x",block_data[i]);
             }
             printf("\n");
+			block_load = 1;
         }
         else {
             printf("only command is block_read <class> <block #>\n");
         }
     }
 	else if (argc == 2) {
-
+		if (0 == strcmp(argv[1], "block_save")) {
+			if (block_load) {
+				bq27520_write_data_block(block_data);
+				for (i=0;i<BQ27520_BLOCKDATA_LEN;i++) {
+					if ((i&0x7)==0) {
+						printf("\n%04x:",i);
+					}
+					printf(" 0x%02x",block_data[i]);
+				}
+				printf("\n");
+			}
+		}
+		else
+		if (0 == strcmp(argv[1], "block_show")) {
+			for (i=0;i<BQ27520_BLOCKDATA_LEN;i++) {
+				if ((i&0x7)==0) {
+					printf("\n%04x:",i);
+				}
+				printf(" 0x%02x",block_data[i]);
+			}
+			printf("\n");
+		}
+		else
+		if (0 == strcmp(argv[1],"ite")) {
+			bq27520_impedance_track(1);
+		} else
+		if (0 == strcmp(argv[1],"itd")) {
+			bq27520_impedance_track(0);
+		} else
+		if (0 == strcmp(argv[1],"reset")) {
+			bq27520_reset();
+		} else
         if (0 == strncmp(argv[1],"lpsuen",9)) {
             printf("enable lspuen\n");
             if (bq27520_enable_batlspuen()!=0) {
@@ -72,6 +112,7 @@ int do_battery (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
         } else
         if (0 == strncmp(argv[1], "info", 4)) {
 			u16 soc16,volt16,hwtype=0,hwversion=0,fwversion=0,status=0;
+			u16 dfsversion=0;
 			int volt=-1,soc=-1,bat;
 			bat=bq27520_battery_present();
 			printf("bat returned\n");
@@ -97,7 +138,7 @@ int do_battery (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
                 else {
                     printf("FW version unknown\n");
                 }
-                if (bq27520_get_control_register(BQ72520_CONTROL_STATUS, &status)==0) {
+                if (bq27520_get_control_register(BQ27520_CONTROL_STATUS, &status)==0) {
                     const char *bitno_r_str[16]={"DLOGEN","Full Access Sealed","Sealed","SCSV","SCCA","SBCA","SOCVCMDCOMP",
                         "SOCVFAIL","SINITCOMP","SHIBERNATE","SSNOOZE","SSLEEP","SLDMD","SRUP_DIS","SVOK","SQEN"};
                     printf("CONTROL_STATUS = 0x%04x\n",status);
@@ -108,6 +149,9 @@ int do_battery (cmd_tbl_t *cmdtp, int flag, int argc, char *argv[])
                     }
                     printf("\n");
                 }
+				if (bq27520_get_control_register(BQ27520_CONTROL_DFS_VERSION, &dfsversion)==0) {
+					printf("DFS version = 0x%x\n",dfsversion);
+				}
 #endif
                 printf("get voltage\n");
 				if (bq27520_get_voltage(&volt16) == 0) volt=volt16;
@@ -137,6 +181,12 @@ U_BOOT_CMD(
 	"            block_read <block_num> <subblock> - display dataflash block\n"
     "            lpsudis - disable batlspuen\n"
     "            lpsuen - enable batlspuen\n"
+	"			 ite -enable impedance track\n"
+	"			 itd -disable impedance track\n"
+	"			 reset\n"
+	"            block_modify <offset> <value> - untested\n"
+	"            block_save - untested\n"
+
 );
 
 

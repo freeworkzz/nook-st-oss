@@ -584,6 +584,21 @@ static void omap3epfb_screen_sequence_task(struct work_struct *work)
 		return;
 	}
 
+	if (!par->pwr_sess->powered) {
+		int t;
+		dev_dbg(info->device, "PMIC looks unpowered - triggering temp acquisition\n");
+		stat = pmic_get_temperature(par->pwr_sess, &t);
+		if (stat == 0)
+			par->subfq.shrd.p->rq.temperature = t;
+		else if (stat == -ENOSYS)
+			/* some PMIC backends lack a temperature sensor */
+			stat = 0;
+		else
+			dev_err(info->device,
+					"error %d while reading temperature\n",
+						stat);
+	}
+
 	if (pmic_req_powerup(par->pwr_sess)) {
 		/*
 		 * The request returns error only if the power down
@@ -805,7 +820,6 @@ int omap3epfb_pmic_powerup(struct fb_info *info)
 
 	if(down_trylock(&par->screen_update_mutex) == 0)
 	{
-
 		if (pmic_req_powerup(par->pwr_sess)) {
 			/*
 			 * The request returns error only if the power down
@@ -857,6 +871,7 @@ static int omap3epfb_update_area_versatile(struct fb_info *info,
 	area.wvfid &= 0x0000ffffu;
 	area.wvfid |= vsid << OMAP3EPFB_OOB_VSID;
 
+#if 0
 	/* the new request has been queued */
 	if (par->subfq.shwr.p->wq.last_subf_queued) {
 		/* ensure the temperature value in the
@@ -873,7 +888,7 @@ static int omap3epfb_update_area_versatile(struct fb_info *info,
 					"error %d while reading temperature\n",
 						stat);
 	}
-
+#endif
 	if (!stat) {
 		stat = omap3epfb_reqq_push_back_async(info, &area);
 	}
@@ -1281,7 +1296,6 @@ int omap3epfb_send_dsp_pm(struct fb_info *info, bool sleep,
 {
 	struct omap3epfb_par *par = info->par;
 	int st = 0;
-	int t;
 	struct omap3epfb_update_area area_d;
 	struct omap3epfb_bfb_update_area ba;
 	int dsp_running = par->subfq.shwr.p->wq.dsp_running_flag;
@@ -1337,6 +1351,7 @@ int omap3epfb_send_dsp_pm(struct fb_info *info, bool sleep,
 				return st;
 			}
 			area_d.wvfid = DSP_PM_AWAKE;
+#if 0
 			st = pmic_get_temperature(par->pwr_sess, &t);
 			if (st == 0)
 			par->subfq.shrd.p->rq.temperature = t;
@@ -1346,6 +1361,7 @@ int omap3epfb_send_dsp_pm(struct fb_info *info, bool sleep,
 			else
 			dev_err(info->device,
 					"error %d while reading temperature\n", st);
+#endif
 			/*wake-up through daemon*/
 			st = omap3epfb_reqq_push_back_async(info, &area_d);
 			return st;
@@ -1449,6 +1465,7 @@ extern int omap3epfb_set_rotate(struct fb_info *info, int rotate)
 		if (!par->reg_daemon)
 			return 0;
 
+#if 0
 		/* the new request has been queued */
 		if (par->subfq.shwr.p->wq.last_subf_queued) {
 			/* ensure the temperature value in the
@@ -1465,6 +1482,7 @@ extern int omap3epfb_set_rotate(struct fb_info *info, int rotate)
 				    "error %d while reading temperature\n",
 				    st);
 		}
+#endif
 
 		if (!st) {
 			st = omap3epfb_reqq_push_back_async(info, &area);

@@ -30,12 +30,6 @@
 
 #include "pmic.h"
 
-#if defined(FB_OMAP3EP_PAPYRUS_PM_VZERO)
-  #define PAPYRUS_STANDBY_DWELL_TIME	4 /*sec*/
-#else
-  #define PAPYRUS_STANDBY_DWELL_TIME	0
-#endif
-
 #define PAPYRUS_VCOM_MAX_MV		-300
 #define PAPYRUS_VCOM_MIN_MV		-2500
 
@@ -391,7 +385,7 @@ static int papyrus_hw_read_temperature(struct pmic_sess *pmsess, int *t)
 	do {
 		stat = papyrus_hw_getreg(sess,
 				PAPYRUS_ADDR_TMST_CONFIG, &tb);
-	} while (!stat && ntries-- && ((tb & 0x20) == 0) && (tb & 0x80));
+	} while (!stat && ntries-- && (((tb & 0x20) == 0) || (tb & 0x80)));
 
 	if (stat)
 		return stat;

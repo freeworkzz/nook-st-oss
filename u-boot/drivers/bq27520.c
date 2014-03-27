@@ -38,7 +38,7 @@ static int bq27520_i2c_readn(u8 reg, u8 * data,int n)
 
 	select_bus(BQ27520_I2C_BUS_NUM, CFG_I2C_SPEED);
 
-	status = i2c_read(BQ27520_I2C_ADDR, reg, 1, data, n+1);
+	status = i2c_read(BQ27520_I2C_ADDR, reg, 1, data, n);
 	if (status)
 		printf("i2c_read error in %s\n", __FUNCTION__);
 
@@ -116,27 +116,31 @@ static int bq27520_i2c_control_read(u16 ctrl_reg, u16 * data)
 
 	select_bus(BQ27520_I2C_BUS_NUM, CFG_I2C_SPEED);
 
-    data[0]=0;
-    data[1]=0;
+	if (data!=NULL) {
+		data[0]=0;
+		data[1]=0;
+	}
 
     buffer[0]=(ctrl_reg&0x00ff);
     buffer[1]=(ctrl_reg&0xff00)>>8;
 
-    err = i2c_multidata_write(BQ27520_I2C_ADDR, BQ72520_REG_CONTROL, 1, buffer, 2);
+    err = i2c_multidata_write(BQ27520_I2C_ADDR, BQ27520_REG_CONTROL, 1, buffer, 2);
 	if (err) {
 		printf("i2c_read error in %s unable to write control\n", __FUNCTION__);
     }
     else {
-        udelay(2 * 1000);
-        // printf("i2c 0x%x device 0x%x muti byte write 0x%x 0x%x\n",BQ27520_I2C_ADDR,BQ72520_REG_CONTROL, buffer[0],buffer[1]);
-        err = i2c_read_2_byte(BQ27520_I2C_ADDR, BQ72520_REG_CONTROL, data_in);
-        if (!err) {
-        //    printf("control data reg %d read %02x %02x\n",ctrl_reg,data_in[0],data_in[1]);
-            *data=(u16) ((data_in[0])|(((unsigned int) data_in[1])<<8));
-        }
-        else {
-            printf("i2c error reading control data for register 0x%x",ctrl_reg);
-        }
+		if (data!=NULL) {
+			udelay(2 * 1000);
+			// printf("i2c 0x%x device 0x%x muti byte write 0x%x 0x%x\n",BQ27520_I2C_ADDR,BQ27520_REG_CONTROL, buffer[0],buffer[1]);
+			err = i2c_read_2_byte(BQ27520_I2C_ADDR, BQ27520_REG_CONTROL, data_in);
+			if (!err) {
+			//    printf("control data reg %d read %02x %02x\n",ctrl_reg,data_in[0],data_in[1]);
+				*data=(u16) ((data_in[0])|(((unsigned int) data_in[1])<<8));
+			}
+			else {
+				printf("i2c error reading control data for register 0x%x",ctrl_reg);
+			}
+		}
     }
     udelay(1 * 1000);
 
@@ -145,18 +149,18 @@ static int bq27520_i2c_control_read(u16 ctrl_reg, u16 * data)
 
 int bq27520_get_hw_type(u16 *hwtype)
 {
-    return bq27520_i2c_control_read(BQ72520_CONTROL_DEVICE_TYPE, hwtype);
+    return bq27520_i2c_control_read(BQ27520_CONTROL_DEVICE_TYPE, hwtype);
 }
 
 
 int bq27520_get_hw_version(u16 *hwversion)
 {
-    return bq27520_i2c_control_read(BQ72520_CONTROL_HW_VERSION, hwversion);
+    return bq27520_i2c_control_read(BQ27520_CONTROL_HW_VERSION, hwversion);
 }
 
 int bq27520_get_fw_version(u16 *fwversion)
 {
-    return bq27520_i2c_control_read(BQ72520_CONTROL_FW_VERSION, fwversion);
+    return bq27520_i2c_control_read(BQ27520_CONTROL_FW_VERSION, fwversion);
 }
 
 int bq27520_get_control_register(u16 control, u16 *data)
@@ -190,7 +194,7 @@ int bq27520_get_data_block(int dbclass,int block, u8 *data)
     return status;
 }
 
-static int bq27520_write_data_block(u8 *data)
+int bq27520_write_data_block(u8 *data)
 {
 	int status = 0;
 	u8 checksum;
@@ -226,7 +230,7 @@ int bq27520_disable_batlspuen(void)
 			printf("Error writing back configuration data block to data flash\n");
 			return -1;
 		}
-        udelay(100 * 1000);
+        udelay(500 * 1000);
 		printf("battery lspuen disabled\n");
 	}
 
@@ -256,10 +260,47 @@ int bq27520_enable_batlspuen(void)
 			printf("Error writing back configuration data block to data flash\n");
 			return -1;
 		}
-        udelay(100 * 1000);
+        udelay(600 * 1000);
 		printf("battery lspuen enabled\n");
 	}
 
 	return 0;
 }
+
+
+int bq27520_impedance_track(int enable)
+{
+	int ret;
+	if (enable) {
+		ret = bq27520_i2c_control_read(BQ27520_CONTROL_IT_ENABLE,NULL);
+	}
+	else {
+		ret = bq27520_i2c_control_read(BQ27520_CONTROL_IT_DISABLE,NULL);
+	}
+	return ret;
+}
+
+int bq27520_impedance_track_enable(void)
+{
+	u16 status=0;
+	if (bq27520_get_control_register(BQ27520_CONTROL_STATUS, &status)==0) 
+		{
+		udelay(2 * 1000);
+			if (!(status&BQ27520_CONTROL_STATUS_QEN)) {
+				bq27520_impedance_track(1);
+				udelay(300 * 1000);
+				printf("Bq27520 impedance track enabled\n");
+			}
+			return 0;
+		}
+    return 1;
+}
+
+int bq27520_reset(void)
+{
+	int ret;
+	ret = bq27520_i2c_control_read(BQ27520_CONTROL_RESET,NULL);
+	return ret;
+}
+
 #endif

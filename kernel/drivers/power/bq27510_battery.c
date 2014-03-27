@@ -1048,12 +1048,56 @@ static void bq27510_battery_shutdown(struct i2c_client *client)
     cancel_delayed_work_sync(&bat_work);
 }
 
+
+static int bq27510_battery_suspend(struct i2c_client *client, pm_message_t mesg)
+{
+    struct bq27510_device_info *di = i2c_get_clientdata(client);
+    int volts,temp,cap,curr;
+#ifdef CONFIG_BATTERY_BQ27520
+    int ncap;
+    ncap = bq27510_battery_nominal_capacity(di);
+#endif /* CONFIG_BATTERY_BQ27520 */
+
+    volts = bq27510_battery_voltage(di);
+    curr = bq27510_battery_current(di);
+
+    temp= bq27510_battery_temperature(di)-2730;
+    cap = bq27510_battery_rsoc(di);
+    printk("batsuspend %d %d %d %d %d\n",volts,curr,cap,ncap, temp/10);
+
+	return 0;
+}
+
+static int bq27510_battery_resume(struct i2c_client *client)
+{
+    struct bq27510_device_info *di = i2c_get_clientdata(client);
+    int volts,temp,cap,curr;
+#ifdef CONFIG_BATTERY_BQ27520
+    int ncap;
+    ncap = bq27510_battery_nominal_capacity(di);
+#endif /* CONFIG_BATTERY_BQ27520 */
+
+    volts = bq27510_battery_voltage(di);
+    curr = bq27510_battery_current(di);
+
+    temp= bq27510_battery_temperature(di)-2730;
+    cap = bq27510_battery_rsoc(di);
+    printk("batresume  %d %d %d %d %d\n",volts,curr,cap,ncap, temp/10);
+	return 0;
+}
+
+
+
 static struct i2c_driver bq27510_battery_driver = {
 	.driver = {
 		.name = "bq27510-battery",
 	},
 	.probe = bq27510_battery_probe,
 	.remove = bq27510_battery_remove,
+
+    .suspend  = bq27510_battery_suspend,
+    .resume	  = bq27510_battery_resume,
+
     .shutdown = bq27510_battery_shutdown,
 	.id_table = bq27510_id,
 };

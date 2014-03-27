@@ -1586,7 +1586,8 @@ mb();
 		return -EBUSY;
 	}
 
-	if(!pmic_standby_dwell_time_ready(par->pwr_sess)) {
+	/* skip the callback if dwell time is zero */
+	if (PAPYRUS_STANDBY_DWELL_TIME && !pmic_standby_dwell_time_ready(par->pwr_sess)) {
 		return -EBUSY;
 	}
 

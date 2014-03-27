@@ -113,12 +113,13 @@ static void omap3epfb_disable_work(struct work_struct *work)
 		struct omap3epfb_par,
 		disable_work.work);
 
+	g_disable_time = 0;  // Reset expiration time
+	par->disable_flags = 0;
+
 	DEBUG_LOG(DEBUG_LEVEL2,"delayed enable EPD Updates\n");
 
 	omap3epfb_reqq_purge(par->info);
 	omap3epfb_update_screen(par->info, OMAP3EPFB_WVFID_GC, false);
-	par->disable_flags = 0;
-	g_disable_time = 0;  // Reset expiration time
 }
 
 
