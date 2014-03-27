@@ -35,6 +35,7 @@ extern int omap3epdss_alloc(struct fb_info *info, int lcd_db_order);
 extern void omap3epdss_free(struct fb_info *info);
 
 extern int omap3epdss_prepare_start(struct fb_info *info, unsigned int xres, unsigned int yres, unsigned int clk_khz, int panel_type);
+extern void omap3epdss_set_border_color(struct fb_info *info);
 extern void omap3epdss_start(struct fb_info *info);
 extern void omap3epdss_request_stop(void);
 extern void omap3epdss_stop(struct fb_info *info);

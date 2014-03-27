@@ -70,9 +70,8 @@
 #define PAPYRUS2_REVID_REG			0x10
 
 /* I2C chip addresses */
-#define PAPYRUS2_BASE_ADDR_EVT1C     0x48
-#define PAPYRUS2_BASE_ADDR_EVT2      0x68
-#define PAPYRUS1_BASE_ADDR			0x48
+#define PAPYRUS_BASE_ADDR_1     0x48
+#define PAPYRUS_BASE_ADDR_2     0x68
 
 #define PAPYRUS1_VCOM_STEP 11
 #define PAPYRUS2_VCOM_STEP 10
@@ -81,6 +80,9 @@ static unsigned int PAPYRUS_BASE_ADDR = 0x00;  //will be defined run-time in the
 
 static int papirus_power_on = 0;
 
+#if !defined(CONFIG_OMAP3_BEAGLE)
+	DECLARE_GLOBAL_DATA_PTR;
+#endif
 #if defined(CONFIG_3621GOSSAMER)	// || defined(CONFIG_3630EDP1) || defined(CONFIG_3621EDP1)
 /*
  * Convience functions to read and write from TWL4030
@@ -292,20 +294,37 @@ static int err_deactivate(void)
 //------------------------------------------------------------------------------
 int dis_power_off(void)
 {
-	int stat = 0;;
+	int stat = 0;
 
 #if !defined(CONFIG_OMAP3_BEAGLE)
-	DECLARE_GLOBAL_DATA_PTR;
 #if defined(CONFIG_3621GOSSAMER)
-	switch (gd->bd->bi_board_revision) {
-		case BOARD_GOSSAMER_REV_EVT2:
-        case BOARD_GOSSAMER_REV_EVT1C:
-		case BOARD_GOSSAMER_REV_EVTPRE1C:
-			stat = papyrus2_power_off();
-			break;
-		default: /* EVT1a and EVT3, DVT, PVT... */
+	u8  version = 0;
+
+	// Get the Papyrus version
+	i2c_set_bus_num(PAPYRUS_I2C_BUS);
+	stat = papirus_i2c_read_u8(PAPYRUS_BASE_ADDR_1, &version, PAPYRUS1_REVID_REG);
+	if (stat) {
+		/* Try the other i2c address */
+		stat = papirus_i2c_read_u8(PAPYRUS_BASE_ADDR_2, &version, PAPYRUS2_REVID_REG);
+		if (stat) {
+			printf("ERROR: Could not read Papyrus version\n");
+			return stat;
+		}
+	}
+
+	// Call the appropriate power off routine depending on the Papyrus version
+	switch (version & 0xF) {
+		case 0:
+		case 1:
 			stat = papyrus1_power_off();
 			break;
+		case 5:
+		case 6:
+			stat = papyrus2_power_off();
+			break;
+		default:
+			printf("ERROR: Unknown Papyrus version: %x\n", (version & 0x0F));
+			return -1;
 		}
 #elif defined(CONFIG_3630EDP1) || defined (CONFIG_3621EDP1)
 	stat = papyrus1_power_off();
@@ -405,6 +424,8 @@ static int papyrus_get_vcom_from_boot_scr(int vcom_step_mv)
 	return (-1);
 }
 
+// Try reading Vcom from ROM token; if not present, try from boot.scr
+//------------------------------------------------------------------------------
 static int papyrus_get_vcom(int vcom_step_mv)
 {
     int vcom = 0;
@@ -419,7 +440,7 @@ static int papyrus_get_vcom(int vcom_step_mv)
     vcom = papyrus_get_vcom_from_boot_scr(vcom_step_mv);
 
     if (vcom == -1) {
-        printf("Failed to read VCOM from boot.src, returning default\n");
+        printf("Failed to read VCOM from boot.scr, returning default\n");
     }
 
     return vcom;
@@ -427,10 +448,10 @@ static int papyrus_get_vcom(int vcom_step_mv)
 
 #if !defined(CONFIG_OMAP3_BEAGLE)
 //------------------------------------------------------------------------------
-int papyrus1_init(void)
+int papyrus1_init(volatile struct epd_splash_cfg_arm *pIf)
 {
-	u8 version;
-    int vcom;
+	u8 version, read_val;
+    int vcom, i, err_value= 0;
 	//Setup papirus via I2C
 	if(papirus_i2c_write_u8(PAPYRUS_BASE_ADDR, 0,    PAPYRUS1_FIX_READ_PTR_REG))
 		return -1;
@@ -456,13 +477,33 @@ int papyrus1_init(void)
 	//Start temperature measure
 	if(papirus_i2c_write_u8(PAPYRUS_BASE_ADDR, 0x84, PAPYRUS1_TMST_CONFIG_REG))
 		return -1;
+	//Read temperature
+	for (i = 0; i < 50;) {
+		err_value = papirus_i2c_read_u8(PAPYRUS_BASE_ADDR, &read_val, PAPYRUS1_TMST_CONFIG_REG);
+		i++;
+		if (!err_value && !(read_val & 0x80) && (read_val & 0x20))
+			break;
+	}
+
+	if (!err_value && !(read_val & 0x80) && (read_val & 0x20)) {
+		udelay(1000);
+		if(!papirus_i2c_read_u8(PAPYRUS_BASE_ADDR, &read_val, PAPYRUS1_TMST_VALUE_REG))
+		{
+			pIf->cmn.temperature = read_val;
+			print_info("Papirus temperature = %d, tries to read = %d\n", pIf->cmn.temperature, i);
+		} else {
+			return -1;
+		}
+	} else {
+		return -1;
+	}
 
 	vcom = papyrus_get_vcom(PAPYRUS1_VCOM_STEP);
 	if (vcom < 28 || vcom > 227) {
 		vcom = 0x74;// 0x74 keep at default
 		printf("-W- WARNING: VCOM set to default -%dmV\n", vcom*PAPYRUS1_VCOM_STEP);
 	} else {
-		print_info("VCOM = -%dmV", vcom*PAPYRUS1_VCOM_STEP);
+		printf("Vcom = -%dmV\n", vcom*PAPYRUS1_VCOM_STEP);
 	}
 
 	/* set VADJ : VCOM controlled by I2C */
@@ -486,7 +527,7 @@ int papyrus1_init(void)
 }
 
 //------------------------------------------------------------------------------
-int papyrus1_pic_voltage_enable(volatile struct epd_splash_cfg_arm *pIf)
+int papyrus1_pic_voltage_enable(void)
 {
 	int err_value = 0;
 	u8 read_val;
@@ -495,26 +536,6 @@ int papyrus1_pic_voltage_enable(volatile struct epd_splash_cfg_arm *pIf)
 	if(papirus_i2c_write_u8(PAPYRUS_BASE_ADDR, 0x3f, PAPYRUS1_ENABLE_REG))
 		return -1;
 
-	{//Read temperature
-		int i;
-		for (i = 0; i < 50;) {
-			err_value = papirus_i2c_read_u8(PAPYRUS_BASE_ADDR, &read_val, PAPYRUS1_TMST_CONFIG_REG);
-			i++;
-			if (!err_value && !(read_val & 0x80))
-				break;
-		}
-		if (!err_value && !(read_val & 0x80)) {
-			if(!papirus_i2c_read_u8(PAPYRUS_BASE_ADDR, &read_val, PAPYRUS1_TMST_VALUE_REG))
-			{
-				pIf->cmn.temperature = read_val;
-				print_info("Papirus temperature = %d, tries to read = %d\n", pIf->cmn.temperature, i);
-			} else {
-				return -1;
-			}
-		} else {
-			return -1;
-		}
-	}
 	{//Check PG
 		int i;
 		for (i = 0; i < 50;) {
@@ -534,10 +555,10 @@ int papyrus1_pic_voltage_enable(volatile struct epd_splash_cfg_arm *pIf)
 }
 
 //------------------------------------------------------------------------------
-int papyrus2_init(void)
+int papyrus2_init(volatile struct epd_splash_cfg_arm *pIf)
 {
-	u8 version;
-    int vcom;
+	u8 version, read_val;
+    int vcom, i, err_value= 0;
 
 	//Setup papirus via I2C
 	//Init
@@ -553,13 +574,31 @@ int papyrus2_init(void)
 	//Start temperature measure
 	if(papirus_i2c_write_u8(PAPYRUS_BASE_ADDR, 0x83, PAPYRUS2_TMST1_REG))
 		return -1;
+	for (i = 0; i < 50;) {
+		err_value = papirus_i2c_read_u8(PAPYRUS_BASE_ADDR, &read_val, PAPYRUS2_TMST1_REG);
+		i++;
+		if (!err_value && !(read_val & 0x80) && (read_val & 0x20))
+			break;
+	}
+		if (!err_value && !(read_val & 0x80) && (read_val & 0x20)) {
+		udelay(1000);
+		if(!papirus_i2c_read_u8(PAPYRUS_BASE_ADDR, &read_val, PAPYRUS2_TMST_VALUE_REG))
+		{
+			pIf->cmn.temperature = read_val;
+			print_info("Papirus temperature = %d, tries to read = %d\n", pIf->cmn.temperature, i);
+		} else {
+			return -1;
+		}
+	} else {
+		return -1;
+	}
 
 	vcom = papyrus_get_vcom(PAPYRUS2_VCOM_STEP);
 	if (vcom < 0 || vcom > 511) {
 		vcom = 0x74;// 0x74 keep at default
-		printf("-W- WARNING: VCOM set to default -%d0mV\n", vcom);
+		printf("-W- WARNING: VCOM set to default -%dmV\n", vcom*PAPYRUS2_VCOM_STEP);
 	} else {
-		print_info("VCOM = -%d0mV", vcom);
+		printf("Vcom = -%dmV\n", vcom*PAPYRUS2_VCOM_STEP);
 	}
 	// set VCOM1
         if(papirus_i2c_write_u8(PAPYRUS_BASE_ADDR, (uint8)vcom, PAPYRUS2_VCOM1_ADJUST_REG))
@@ -585,7 +624,7 @@ int papyrus2_init(void)
 }
 
 //------------------------------------------------------------------------------
-int papyrus2_pic_voltage_enable(volatile struct epd_splash_cfg_arm *pIf)
+int papyrus2_pic_voltage_enable(void)
 {
 	int err_value = 0;
 	u8 read_val;
@@ -594,26 +633,6 @@ int papyrus2_pic_voltage_enable(volatile struct epd_splash_cfg_arm *pIf)
 	if(papirus_i2c_write_u8(PAPYRUS_BASE_ADDR, 0x3f, PAPYRUS2_ENABLE_REG))
 		return -1;
 
-	{//Read temperature
-		int i;
-		for (i = 0; i < 50;) {
-			err_value = papirus_i2c_read_u8(PAPYRUS_BASE_ADDR, &read_val, PAPYRUS2_TMST1_REG);
-			i++;
-			if (!err_value && !(read_val & 0x80))
-				break;
-		}
-		if (!err_value && !(read_val & 0x80)) {
-			if(!papirus_i2c_read_u8(PAPYRUS_BASE_ADDR, &read_val, PAPYRUS2_TMST_VALUE_REG))
-			{
-				pIf->cmn.temperature = read_val;
-				print_info("Papirus temperature = %d, tries to read = %d\n", pIf->cmn.temperature, i);
-			} else {
-				return -1;
-			}
-		} else {
-			return -1;
-		}
-	}
 	{//Check PG
 		int i;
 		for (i = 0; i < 50;) {
@@ -674,9 +693,9 @@ int papirus_init(const char *init_img_fname)
 {
 	volatile struct epd_splash_cfg_arm* pIf = (struct epd_splash_cfg_arm*)DSP_IF_ADDR;
 	int err_value = 0;
+	u8 version = 0;
 
 #if !defined(CONFIG_OMAP3_BEAGLE)
-	DECLARE_GLOBAL_DATA_PTR;
 #if defined(CONFIG_3621GOSSAMER)
 	/* CPLD reset */
 	if (!omap_request_gpio(CPLD_RESET)) {
@@ -716,38 +735,44 @@ int papirus_init(const char *init_img_fname)
 
     if (PAPYRUS_BASE_ADDR == 0x00) {
 #if defined(CONFIG_3621GOSSAMER)
-		switch (gd->bd->bi_board_revision) {
-			case BOARD_GOSSAMER_REV_EVT2:
-				PAPYRUS_BASE_ADDR = PAPYRUS2_BASE_ADDR_EVT2;
-				break;
-            case BOARD_GOSSAMER_REV_EVT1C:
-			case BOARD_GOSSAMER_REV_EVTPRE1C:
-               	PAPYRUS_BASE_ADDR = PAPYRUS2_BASE_ADDR_EVT1C;
-				break;
-			default: /* EVT1a and EVT3, DVT, PVT... */
-               	PAPYRUS_BASE_ADDR = PAPYRUS1_BASE_ADDR;
-				break;
+		// Try both known Papyrus addresses
+		if(!papirus_i2c_read_u8(PAPYRUS_BASE_ADDR_1, &version, PAPYRUS1_REVID_REG)) {
+       	        	PAPYRUS_BASE_ADDR = PAPYRUS_BASE_ADDR_1;
 		}
+		else if(!papirus_i2c_read_u8(PAPYRUS_BASE_ADDR_2, &version, PAPYRUS2_REVID_REG)) {
+			PAPYRUS_BASE_ADDR = PAPYRUS_BASE_ADDR_2;
+		}
+		else {
+			printf("ERROR: Could not read Papyrus version\n");
+			goto papirus_init_err;
+		}
+		printf("Papyrus base addr = 0x%02X; version = %x (TPS6518%dr%dp%d)\n", PAPYRUS_BASE_ADDR, version,
+			version & 0xF, (version & 0xC0) >> 6, (version & 0x30) >> 4);
 #elif defined(CONFIG_3630EDP1) || defined (CONFIG_3621EDP1)
 	PAPYRUS_BASE_ADDR = PAPYRUS1_BASE_ADDR;
 #endif
 	}
 
+	pIf->cmn.temperature = 25;	// Set default room temperature for now
 #if defined(CONFIG_3621GOSSAMER)
-		switch (gd->bd->bi_board_revision) {
-			case BOARD_GOSSAMER_REV_EVT2:
-           	case BOARD_GOSSAMER_REV_EVT1C:
-			case BOARD_GOSSAMER_REV_EVTPRE1C:
-				if (papyrus2_init())
+	// Call the appropriate initialization routine depending on the Papyrus version
+	switch (version & 0xF) {
+		case 0:
+		case 1:
+			if (papyrus1_init(pIf))
 					goto papirus_init_err;
 				break;
-			default: /* EVT1a and EVT3, DVT, PVT... */
-				if (papyrus1_init())
+		case 5:
+		case 6:
+			if (papyrus2_init(pIf))
 					goto papirus_init_err;
 				break;
+		default:
+			printf("ERROR: Unknown Papyrus version: %x\n", (version & 0x0F));
+			goto papirus_init_err;
 		}
 #elif defined(CONFIG_3630EDP1) || defined (CONFIG_3621EDP1)
-	if (papyrus1_init()) {
+	if (papyrus1_init(pIf)) {
 		goto papirus_init_err;
 	}
 #endif
@@ -756,20 +781,26 @@ int papirus_init(const char *init_img_fname)
 	if (read_dsp_fw(init_img_fname, pIf)) {
 		goto papirus_init_err;
 	}
-	pIf->cmn.temperature = 0;	/// Set some defined value.
 
 #if defined(CONFIG_3621GOSSAMER)
-	switch (gd->bd->bi_board_revision) {
-			case BOARD_GOSSAMER_REV_EVT2:
-           	case BOARD_GOSSAMER_REV_EVT1C:
-			case BOARD_GOSSAMER_REV_EVTPRE1C:
-				if (papyrus2_pic_voltage_enable(pIf))
+	// Call the appropriate voltage enable routine depending on the Papyrus
+	// version.  Also set the environment variable for the boot parameters.
+	switch (version & 0xF) {
+		case 0:
+		case 1:
+			if (papyrus1_pic_voltage_enable())
 					goto papirus_init_err;
+			setenv ("epd_pmic", "tps65180-1p2-i2c");
 				break;
-			default: /* EVT1a and EVT3, DVT, PVT... */
-				if (papyrus1_pic_voltage_enable(pIf))
+		case 5:
+		case 6:
+			if (papyrus2_pic_voltage_enable())
 					goto papirus_init_err;
+			setenv ("epd_pmic", "tps65185-i2c");
 				break;
+		default:
+			printf("ERROR: Unknown Papyrus version: %x\n", (version & 0x0F));
+			goto papirus_init_err;
 		}
 #elif defined(CONFIG_3630EDP1) || defined (CONFIG_3621EDP1)
 	if (papyrus1_pic_voltage_enable()) {

@@ -18,10 +18,13 @@
 
 struct pmic_sess;
 
-#define PMIC_DEFAULT_DWELL_TIME_MS	1111
+#define PMIC_DEFAULT_DWELL_TIME_MS	500
 #define PMIC_DEFAULT_VCOMOFF_TIME_MS	20
 
-#if defined(FB_OMAP3EP_PAPYRUS_PM_VZERO)
+/* Acquire temperature no more than once per minute */
+#define PMIC_T_ACQ_SEC			60
+
+#if defined(CONFIG_FB_OMAP3EP_PAPYRUS_PM_VZERO)
   #define PAPYRUS_STANDBY_DWELL_TIME	4 /*sec*/
 #else
   #define PAPYRUS_STANDBY_DWELL_TIME	0
@@ -66,6 +69,8 @@ struct pmic_sess {
 	unsigned int vcomoff_time_ms;
 	const struct pmic_driver *drv;
 	void *drvpar;
+	int temp_man_offset;
+
 };
 
 extern int pmic_probe(struct pmic_sess **sess, const char *id, char *opt,

@@ -1,4 +1,3 @@
-
 /*
  *
  * Copyright (C) 2008 Texas Instruments Inc.
@@ -122,6 +121,9 @@
 #include <linux/bootmem.h>
 #endif
 
+#ifdef CONFIG_LEDS_AS3676
+#include <linux/leds-as3676.h>
+#endif
 #define DEFAULT_BACKLIGHT_BRIGHTNESS 105
 
 #ifdef CONFIG_TOUCHSCREEN_CYTTSP_I2C
@@ -163,6 +165,23 @@ static int gossamer_twl4030_keymap[] = {
 	0
 };
 
+#ifdef CONFIG_LEDS_AS3676
+static struct as3676_platform_data as3676_pdata = {
+	.pwronkey_shutdown_msec = 6500, /* long-press to shutdown in 6.5s */
+	.step_up_frequ = 1,	/* 1 = 500 kHz */
+	.step_up_vtuning = 0x0E,       /* 0x0E = 14uA on DCDC_FB */
+	.leds[0] = {
+		.name = "lcd-backlight",
+		.on_charge_pump = 0,
+		.max_current_uA = 10000,
+	},
+	.leds[1] = {
+		.name = "lcd-backlight2",
+		.on_charge_pump = 0,
+		.max_current_uA = 10000,
+	}
+};
+#endif
 
 static struct twl4030_keypad_data gossamer_kp_twl4030_data = {
 	.rows		= 8,
@@ -862,13 +881,21 @@ static struct i2c_board_info __initdata gossamer_i2c_bus2_info[] = {
 #endif /* CONFIG_TOUCHSCREEN_ZFORCE */
 #endif /* CONFIG_MACH_OMAP3621_GOSSAMER_EVT1C */
 
+#if defined(CONFIG_LEDS_AS3676)
+	{
+		I2C_BOARD_INFO("as3676", 0x40 ),  
+		.flags = I2C_CLIENT_WAKE,
+		.irq = 0,
+		.platform_data = &as3676_pdata,
+	}
+#endif /* CONFIG_LEDS_AS3676 */
 };
 
 
 #if defined(CONFIG_USB_ANDROID) || defined(CONFIG_USB_ANDROID_MODULE)
 static struct usb_mass_storage_platform_data mass_storage_pdata = {
 	.vendor = "B&N     ",
-	.product = "Ebook Disk      ",
+	.product = "NOOK SimpleTouch",
 	.release = 0x0100,
 };
 
@@ -888,7 +915,7 @@ static struct android_usb_platform_data android_usb_pdata = {
 	.product_id	= BN_USB_PRODUCT_ID_GOSSAMER,
 	.adb_product_id	= BN_USB_PRODUCT_ID_GOSSAMER,
 	.version	= 0x0100,
-	.product_name	= "NOOK",
+	.product_name	= "NOOK SimpleTouch",
 	.manufacturer_name = "B&N",
 	.serial_number	= "11223344556677",
 	.nluns = 2,
@@ -1038,15 +1065,11 @@ static void __init omap_gossamer_init(void)
 	dump_board_revision();
 #if defined(CONFIG_TOUCHSCREEN_ZFORCE) || defined(CONFIG_TOUCHSCREEN_ZFORCE_MODULE)
 #ifdef CONFIG_MACH_OMAP3621_GOSSAMER_EVT1C
-    papyrus_set_i2c_address(PAPYRUS2_1P1_I2C_ADDRESS);
+	// Note: the Papyrus i2c address is now automatically detected
+	//       by the driver
 	if ( is_gossamer_board_evt_pre1c() )
 	{
 		zforce_platform.irqflags = IRQF_TRIGGER_RISING;
-        papyrus_set_i2c_address(PAPYRUS2_1P0_I2C_ADDRESS);
-	}
-    if ( is_gossamer_board_evt1c() )
-    {
-        papyrus_set_i2c_address(PAPYRUS2_1P0_I2C_ADDRESS);
     }
 #endif
 #endif /* CONFIG_TOUCHSCREEN_ZFORCE */

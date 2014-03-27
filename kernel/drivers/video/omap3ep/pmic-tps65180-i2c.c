@@ -44,11 +44,6 @@
 /* Papyrus WAKEUP pin must stay low for
    a minimum time */
 #define PAPYRUS_SLEEP_MINIMUM_MS 110
-/* Temp sensor might take a little time to
-   settle eventhough the status bit in TMST1
-   state conversion is done - if read too early
-   0C will be returned instead of the right temp */
-#define PAPYRUS_TEMP_READ_TIME_MS 10
 
 struct papyrus_sess {
 	struct i2c_adapter *adap;
@@ -72,6 +67,8 @@ struct papyrus_sess {
 #define WAKEUP_GPIO		(87)	/* active high */
 #define CPLD_RESET_GPIO		(88)	/* active low */
 #define EN_CPLD_POW_GPIO	(85)	/* active high */
+#define PWR0_GPIO		(82)	/* keep low */
+#define VCOM_CTRL_GPIO		(84)	/* keep high */
 
 #if defined(CONFIG_MACH_OMAP3621_EDP1) ||\
     defined(CONFIG_MACH_OMAP3621_GOSSAMER)
@@ -101,7 +98,11 @@ struct papyrus_sess {
 
 #define PAPYRUS_I2C_ADDRESS		0x48
 
-#define PAPYRUS_MV_TO_VCOMREG(MV)	((MV) / 11)
+#define PAPYRUS_MV_TO_VCOMREG(MV)	(((MV) + 6) / 11)
+
+#define PAPYRUS_EOC			(1u << 0)
+#define PAPYRUS_CONV_END		(1u << 5)
+#define PAPYRUS_READ_THERM		(1u << 7)
 
 #define V3P3_EN_MASK	0x20
 #define PAPYRUS_HIGH_VOL_PWRDN_DELAY_MS 500
@@ -113,6 +114,9 @@ struct papyrus_hw_state {
 	uint8_t pg_status;
 };
 
+static bool papyrus_standby_dwell_time_ready(struct pmic_sess *pmsess);
+static void papyrus_pm_sleep(struct pmic_sess *sess);
+static void papyrus_pm_resume(struct pmic_sess *sess);
 
 static int papyrus_hw_setreg(struct papyrus_sess *sess, uint8_t regaddr, uint8_t val)
 {
@@ -250,8 +254,8 @@ static void papyrus_hw_send_powerdown(struct papyrus_sess *sess)
 {
 	int stat;
 
-	/* Set Power down sequence to VDDH->VPOS->VNEG->VEE */
-	stat = papyrus_hw_setreg(sess, PAPYRUS_ADDR_PWR_SEQ0,0xE1);
+	/* Set Power down sequence to VDDH->VPOS->VNEG,VEE */
+	stat = papyrus_hw_setreg(sess, PAPYRUS_ADDR_PWR_SEQ0,0xE5);
 	/* shutdown delays set to 6/6/15/3 ms between each strobe
        as close as possible to TPS65185 */
 	stat |= papyrus_hw_setreg(sess, PAPYRUS_ADDR_PWR_SEQ1,0xF3);
@@ -313,6 +317,8 @@ static int papyrus_hw_init(struct papyrus_sess *sess, const char *chip_id)
 	stat |= gpio_request(CPLD_V_DET2_GPIO, "cpld_hw_rev");
 	stat |= gpio_request(EN_CPLD_POW_GPIO, "cpld-pwr");
 	stat |= gpio_request(CPLD_RESET_GPIO, "cpld_reset");
+	stat |= gpio_request(PWR0_GPIO, "papyrus_pwr0");	/* en_epd_pwrup */
+	stat |= gpio_request(VCOM_CTRL_GPIO, "papyrus_vcom_ctrl");
 
 	if (stat) {
 		pr_err("papyrus: cannot reserve GPIOs\n");
@@ -323,6 +329,10 @@ static int papyrus_hw_init(struct papyrus_sess *sess, const char *chip_id)
 	gpio_direction_output(EN_CPLD_POW_GPIO, 0);
 	gpio_direction_input(CPLD_V_DET1_GPIO);
 	gpio_direction_input(CPLD_V_DET2_GPIO);
+
+	/* we keep these signals constant */
+	gpio_direction_output(PWR0_GPIO, 0);
+	gpio_direction_output(VCOM_CTRL_GPIO, 1);
 
 	sess->wakeup_active_high = strcmp(chip_id, "tps65180-1p1-i2c");
 
@@ -373,30 +383,100 @@ free_gpios:
 	return stat;
 }
 
-static int papyrus_hw_read_temperature(struct pmic_sess *pmsess, int *t)
+static int papyrus_hw_read_temperature_impl(struct pmic_sess *pmsess, int *t)
 {
 	struct papyrus_sess *sess = pmsess->drvpar;
 	int stat;
-	int ntries = 50;
+	int ntries;
 	uint8_t tb;
+	bool adc_ready;
 
-	stat = papyrus_hw_setreg(sess, PAPYRUS_ADDR_TMST_CONFIG, 0x84);
-
+	/* wait for READ_THERM=0 */
+	ntries = 5;
 	do {
-		stat = papyrus_hw_getreg(sess,
-				PAPYRUS_ADDR_TMST_CONFIG, &tb);
-	} while (!stat && ntries-- && (((tb & 0x20) == 0) || (tb & 0x80)));
+		stat = papyrus_hw_getreg(sess, PAPYRUS_ADDR_TMST_CONFIG, &tb);
+		if (~tb & PAPYRUS_READ_THERM)
+			udelay(100);
+	} while (!stat && --ntries && !(tb & PAPYRUS_READ_THERM));
+
+
+	/* start acquisition */
+	stat = papyrus_hw_setreg(sess, PAPYRUS_ADDR_TMST_CONFIG,
+					PAPYRUS_READ_THERM);
+
+	/* ensure ADC acquisition is completed */
+	ntries = 3;
+	do {
+		/*
+		 * Wait before reading back status. This is needed because
+		 * of known problems with EOC and READ_THERM flags.
+		 */
+		msleep(1);
+		stat = papyrus_hw_getreg(sess, PAPYRUS_ADDR_TMST_CONFIG, &tb);
+		adc_ready = !(tb & PAPYRUS_READ_THERM) && (tb & PAPYRUS_CONV_END);
+	} while (!stat && --ntries && !adc_ready);
 
 	if (stat)
 		return stat;
 
-	msleep(PAPYRUS_TEMP_READ_TIME_MS);
+	/* read value */
 	stat = papyrus_hw_getreg(sess, PAPYRUS_ADDR_TMST_VALUE, &tb);
 	*t = (int)(int8_t)tb;
+
+	if (!stat && !ntries)
+		stat = -ETIMEDOUT;
 
 	return stat;
 }
 
+static int papyrus_hw_reset_chip(struct pmic_sess *pmsess)
+{
+	if (pmsess->powered)
+		return -EAGAIN;	/* can't reset while being powered up */
+
+	/* take into account VZERO errata and wait before deep sleep */
+	while (!papyrus_standby_dwell_time_ready(pmsess))
+		msleep(20);
+
+	/* re-use suspend/resume code to properly reset via WAKEUP */
+	papyrus_pm_sleep(pmsess);
+	papyrus_pm_resume(pmsess);
+
+	return 0;
+}
+
+static int papyrus_hw_read_temperature(struct pmic_sess *pmsess, int *t)
+{
+	const int t_bad_marker = -10;
+	int ntries = 3;		/* keep this low - no need for many retries */
+	int stat;
+
+	do {
+		stat = papyrus_hw_read_temperature_impl(pmsess, t);
+		if ((stat == -ETIMEDOUT) || (*t == t_bad_marker)) {
+			/*
+			 * We've hit the following errata:
+			 * 	"TMST_VALUE stuck at -10 deg Celsius"
+			 * Solution: Reset papyrus.
+			 * Assumptions: PMIC is not powered up.
+			 */
+			pr_err("papyrus: trying a reset due to temperature "
+					"acquisition errata (t=%d)\n", *t);
+			stat = papyrus_hw_reset_chip(pmsess);
+
+			if (stat)
+				pr_err("papyrus: failed to reset (%d)\n", stat);
+		} else if (!stat)
+			ntries = 0;	/* early exit due to success */
+	} while (ntries--);
+
+	/* NOTE: Reading temperature right after WAKEUP activation is
+	 * guaranteed to be valid. Thus we don't return error upon exhausting
+	 * the number of retries. After all, temperature could really be -10.
+	 */
+
+	return stat;
+}
 
 static void papyrus_hw_power_req(struct pmic_sess *pmsess, bool up)
 {
@@ -547,6 +627,10 @@ static int papyrus_vcom_switch(struct pmic_sess *pmsess, bool state)
 
 	stat = papyrus_hw_setreg(sess, PAPYRUS_ADDR_ENABLE,
 						sess->enable_reg_shadow);
+
+	/* account for delays in i2c transactions and VCOM LDO startup */
+	if (state)
+		msleep(1);
 
 	return stat;
 }

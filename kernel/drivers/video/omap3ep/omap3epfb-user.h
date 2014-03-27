@@ -352,7 +352,7 @@ struct omap3epfb_buffaddrs {
 
 #define OMAP3EPFB_IO_BFB_AREA_UPDATE	_IOWR('O', 0x8c, \
 						struct omap3epfb_bfb_update_area)
-
+#define OMAP3EPFB_TEMP_ADJUST		_IOW('O', 0x8d, int)
 
 /* Daemon-specific OMAP3EP FB IOCTL-s */
 #define OMAP3EPFB_IO_GET_UPDATE_AREA	_IOR('O', 0x90, \

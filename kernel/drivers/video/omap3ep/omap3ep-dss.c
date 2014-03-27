@@ -131,12 +131,15 @@ static void omap3epdss_cleanup(struct fb_info *info)
 }
 
 #ifdef CONFIG_FB_OMAP3EP_MANAGE_BORDER
-static void omap3epdss_set_border_color(struct fb_info *info)
+void omap3epdss_set_border_color(struct fb_info *info)
 {
 	struct omap3epfb_par *devpar = info->par;
 	unsigned int val;
 
 	val = devpar->epd_varpar.border_color;
+        pr_debug("omap3epdss_set_border_color: %s\n", (val == EPD_BORDER_FLOATING) ? "EPD_BORDER_FLOATING" :
+	         (val == EPD_BORDER_WHITE) ? "EPD_BORDER_WHITE" : (val == EPD_BORDER_BLACK) ?
+	         "EPD_BORDER_BLACK" : "UNKNOWN_VAL");
 
 	switch (val) {
 		case EPD_BORDER_FLOATING:
@@ -234,7 +237,8 @@ int omap3epdss_prepare_start(struct fb_info *info, unsigned int xres, unsigned i
 	halDSS_DISPC_SetColorMap((u32*)dss_cmbuf_phys);
 
 #ifdef CONFIG_FB_OMAP3EP_MANAGE_BORDER
-	omap3epdss_set_border_color (info);
+	// NOTE: this is now done in subfq.c
+	//omap3epdss_set_border_color (info);
 #endif
 
 	return 0;
@@ -253,8 +257,9 @@ void omap3epdss_request_stop(void)
 
 #ifdef CONFIG_FB_OMAP3EP_MANAGE_BORDER
 	/* Leave border floating */
-	gpio_direction_output(BORDER_CTRL0_GPIO, 0);
-	gpio_direction_output(BORDER_CTRL1_GPIO, 0);
+	// NOTE: this is now done in subfq.c
+	//gpio_direction_output(BORDER_CTRL0_GPIO, 0);
+	//gpio_direction_output(BORDER_CTRL1_GPIO, 0);
 #endif
 
        // halDSS_set_go();

@@ -129,6 +129,7 @@ int pmic_probe(struct pmic_sess **sess, const char *id, char *opt,
 	(*sess)->powered = false;
 	(*sess)->dwell_time_ms = dwell_time_ms;
 	(*sess)->vcomoff_time_ms = vcomoff_time_ms;
+	(*sess)->temp_man_offset = 0;
 
 	INIT_DELAYED_WORK(&(*sess)->powerdown_work, pmic_powerdown_execute);
 	INIT_DELAYED_WORK(&(*sess)->vcomoff_work, pmic_vcomoff_execute);
@@ -269,8 +270,13 @@ int pmic_sync_powerup(struct pmic_sess *sess)
 
 int pmic_get_temperature(struct pmic_sess *sess, int *t)
 {
-	if (sess->drv->hw_read_temperature)
-		return sess->drv->hw_read_temperature(sess, t);
+	int ret;
+
+	if (sess->drv->hw_read_temperature) {
+		ret = sess->drv->hw_read_temperature(sess, t);
+		*t += sess->temp_man_offset;
+		return ret;
+	}
 	else
 		return -ENOSYS;
 }

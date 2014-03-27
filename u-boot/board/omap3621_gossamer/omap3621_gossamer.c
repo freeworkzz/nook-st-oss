@@ -23,6 +23,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
  * MA 02111-1307 USA
  */
+
 #include <common.h>
 #include <asm/arch/cpu.h>
 #include <asm/io.h>
@@ -449,25 +450,6 @@ int gossamer_mmc_splash_reinit(void)
 }
 
 
-static void set_epd_pmic_env(void)
-{
-    DECLARE_GLOBAL_DATA_PTR;
-
-    switch (gd->bd->bi_board_revision) {
-        case BOARD_GOSSAMER_REV_EVT0:
-        case BOARD_GOSSAMER_REV_EVT1A:
-        case BOARD_GOSSAMER_REV_EVT3:
-        case BOARD_GOSSAMER_REV_DVT:
-        default:
-            setenv ("epd_pmic", "tps65180-1p2-i2c");
-            break;
-        case BOARD_GOSSAMER_REV_EVTPRE1C:
-        case BOARD_GOSSAMER_REV_EVT1C:
-        case BOARD_GOSSAMER_REV_EVT2:
-            setenv ("epd_pmic", "tps65185-i2c");
-            break;
-    }
-}
 
  
  
@@ -983,6 +965,8 @@ int misc_init_r(void)
         first_boot= 1;
     }
 
+	// Set default PMIC env value; will be set correctly by papirus.c
+	setenv ("epd_pmic", "tps65180-1p2-i2c");
 	gossamer_charger_init();
 	select_bus(TPS65921_I2C_BUS, CFG_I2C_SPEED);
     printf("gossamer_charger_init complete\n");
@@ -1080,7 +1064,6 @@ int misc_init_r(void)
     v=v;
 
     tps65921_keypad_init();
-    set_epd_pmic_env();
     return (0);
 }
 

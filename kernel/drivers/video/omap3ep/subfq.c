@@ -586,6 +586,82 @@ static void omap3epfb_max_opps_release(struct fb_info *info)
 	resource_release("vdd1_opp", info->device);
 }
 
+#ifdef CONFIG_FB_OMAP3EP_MANAGE_BORDER
+int g_current_wvfid = OMAP3EPFB_WVFID_AUTO;
+
+/* Set the border to black at the beginning of a GC update, followed */
+/* by a white state after a delay equal to the DU time for the       */
+/* current system temperature.                                       */
+static void set_border_color(struct work_struct *work)
+{
+	struct omap3epfb_par *par;
+	struct fb_info *info;
+        struct omap3epfb_par *devpar;
+	int epd_temp = 0;
+	unsigned int DU_time = 0;
+	static long timeout_jif = 0;
+
+	par = container_of(work, struct omap3epfb_par, subfq.border_work.work);
+	info = par->info;
+
+	pr_debug("set_border_color: %d\n", par->subfq.new_border_color);
+
+	BUG_ON((void*)par != info->par);
+	BUG_ON(&par->subfq.border_work.work != work);
+
+
+	if (par->subfq.new_border_color == EPD_BORDER_BLACK) {
+		// Black is the first state of the border refresh
+		// Calculate the time needed for each of the states
+		// NOTE: the times are fixed to the DU waveform temperature-
+		//       compensated times from the EINK WC waveform spec.
+		epd_temp = par->subfq.shrd.p->rq.temperature;
+		if (epd_temp > 17) {
+			DU_time = 260;
+		}
+		else if (epd_temp > 14) {
+			DU_time = 300;
+		}
+		else if (epd_temp > 11) {
+			DU_time = 350;
+		}
+		else if (epd_temp > 5) {
+			DU_time = 450;
+		}
+		else if (epd_temp > 2) {
+			DU_time = 500;
+		}
+		else {
+			DU_time = 580;
+		}
+		pr_debug("EPD temperature = %d C\n", epd_temp);
+		pr_debug("DU wave time = %d ms\n", DU_time);
+		timeout_jif = DU_time * HZ / 1000;
+
+	}
+
+	/* Set border color only if different from current color; */
+        /* otherwise, the DC balance will be off                  */
+	if ((par->hwstate == OMAP3EPFB_HW_OK) &&
+	    (par->subfq.current_border_color != par->subfq.new_border_color)) {
+	        devpar = info->par;
+		devpar->epd_varpar.border_color = par->subfq.new_border_color;
+		omap3epdss_set_border_color (info);
+		if (par->subfq.new_border_color != EPD_BORDER_FLOATING) {
+			par->subfq.current_border_color = par->subfq.new_border_color;
+		}
+	}
+	// Set next color depending on current color; if current is "floating', we are done
+	if (par->subfq.new_border_color != EPD_BORDER_FLOATING) {
+		// Set next color depending on current color
+		par->subfq.new_border_color = (par->subfq.new_border_color == EPD_BORDER_BLACK) ?
+		                               EPD_BORDER_WHITE : EPD_BORDER_FLOATING;
+		queue_delayed_work(par->subfq.border_workq,
+					&par->subfq.border_work, timeout_jif);
+	}
+}
+#endif
+
 static void omap3epfb_screen_sequence_task(struct work_struct *work)
 {
 	struct omap3epfb_par *par;
@@ -621,21 +697,6 @@ static void omap3epfb_screen_sequence_task(struct work_struct *work)
 		return;
 	}
 
-	if (!par->pwr_sess->powered) {
-		int t;
-		dev_dbg(info->device, "PMIC looks unpowered - triggering temp acquisition\n");
-		stat = pmic_get_temperature(par->pwr_sess, &t);
-		if (stat == 0)
-			par->subfq.shrd.p->rq.temperature = t;
-		else if (stat == -ENOSYS)
-			/* some PMIC backends lack a temperature sensor */
-			stat = 0;
-		else
-			dev_err(info->device,
-					"error %d while reading temperature\n",
-						stat);
-	}
-
 	if (pmic_req_powerup(par->pwr_sess)) {
 		/*
 		 * The request returns error only if the power down
@@ -652,6 +713,17 @@ static void omap3epfb_screen_sequence_task(struct work_struct *work)
 		dev_err(info->device, "pmic power up timeout\n");
 		goto out;
 	}
+
+#ifdef CONFIG_FB_OMAP3EP_MANAGE_BORDER
+	/* Set the border to black to start the border refresh sequence */
+	if (g_current_wvfid == OMAP3EPFB_WVFID_GC) {
+		cancel_delayed_work_sync(&par->subfq.border_work);
+		flush_workqueue(par->subfq.border_workq);
+		par->subfq.new_border_color = EPD_BORDER_BLACK;
+		queue_delayed_work(par->subfq.border_workq,
+					&par->subfq.border_work, 0);
+	}
+#endif
 
 #if defined(OMAP3EPFB_GATHER_STATISTICS)
 	par->num_missed_subframes = 0;
@@ -915,30 +987,16 @@ static int omap3epfb_update_area_versatile(struct fb_info *info,
 	area = *src_area;
 	vsid = !!info->var.yoffset;
 
+#ifdef CONFIG_FB_OMAP3EP_MANAGE_BORDER
+	g_current_wvfid = area.wvfid;
+#endif
+
 	/* use the upper 16bits of wvid for out-of-band
 	 * messages to the rendering subsystem
 	 */
 	area.wvfid &= 0x0000ffffu;
 	area.wvfid |= vsid << OMAP3EPFB_OOB_VSID;
 
-#if 0
-	/* the new request has been queued */
-	if (par->subfq.shwr.p->wq.last_subf_queued) {
-		/* ensure the temperature value in the
-		 * shared memory is up-to-date */
-		int t;
-		stat = pmic_get_temperature(par->pwr_sess, &t);
-		if (stat == 0)
-			par->subfq.shrd.p->rq.temperature = t;
-		else if (stat == -ENOSYS)
-			/* some PMIC backends lack a temperature sensor */
-			stat = 0;
-		else
-			dev_err(info->device,
-					"error %d while reading temperature\n",
-						stat);
-	}
-#endif
 	if (!stat) {
 		stat = omap3epfb_reqq_push_back_async(info, &area);
 	}
@@ -1221,6 +1279,10 @@ int omap3epfb_create_screenupdate_workqueue(struct fb_info *info)
 	INIT_DELAYED_WORK(&par->subfq.bursty_work,
 					omap3epfb_bursty_update_execute);
 #endif
+#if defined(CONFIG_FB_OMAP3EP_MANAGE_BORDER)
+	par->subfq.current_border_color = EPD_BORDER_FLOATING;
+	INIT_DELAYED_WORK(&par->subfq.border_work, set_border_color);
+#endif
 #if defined(CONFIG_FB_OMAP3EP_DRIVE_EPAPER_PANEL_DSS)
 	par->subfq.ss_workq = create_rt_workqueue("epd-su");
 
@@ -1247,6 +1309,15 @@ int omap3epfb_create_screenupdate_workqueue(struct fb_info *info)
 		return -ENOMEM;
 	}
 #endif
+#if defined(CONFIG_FB_OMAP3EP_MANAGE_BORDER)
+	par->subfq.border_workq = create_workqueue("epd-border");
+	if (!par->subfq.border_workq) {
+#if defined(CONFIG_FB_OMAP3EP_DRIVE_EPAPER_PANEL_DSS)
+		destroy_workqueue(par->subfq.ss_workq);
+#endif
+		return -ENOMEM;
+	}
+#endif
 
 	return 0;
 }
@@ -1261,6 +1332,10 @@ void omap3epfb_destroy_screenupdate_workqueue(struct fb_info *info)
 	cancel_delayed_work_sync(&par->subfq.bursty_work);
 #endif
 
+#if defined(CONFIG_FB_OMAP3EP_MANAGE_BORDER)
+	cancel_delayed_work_sync(&par->subfq.border_work);
+#endif
+
 #if defined(CONFIG_FB_OMAP3EP_DRIVE_EPAPER_PANEL_DSS)
 	destroy_workqueue(par->subfq.ss_workq);
 #endif
@@ -1269,6 +1344,10 @@ void omap3epfb_destroy_screenupdate_workqueue(struct fb_info *info)
 
 #if defined(CONFIG_FB_OMAP3EP_PGFLIP_DEFER)
 	destroy_workqueue(par->subfq.bursty_workq);
+#endif
+
+#if defined(CONFIG_FB_OMAP3EP_MANAGE_BORDER)
+	destroy_workqueue(par->subfq.border_workq);
 #endif
 
 #if defined(CONFIG_FB_OMAP3EP_DRIVE_EPAPER_PANEL_DSS)
@@ -1280,6 +1359,11 @@ void omap3epfb_destroy_screenupdate_workqueue(struct fb_info *info)
 #if defined(CONFIG_FB_OMAP3EP_PGFLIP_DEFER)
 	par->subfq.bursty_workq = 0;
 #endif
+
+#if defined(CONFIG_FB_OMAP3EP_MANAGE_BORDER)
+	par->subfq.border_workq = 0;
+#endif
+
 }
 
 /* Blitter FB Functions*/
@@ -1359,6 +1443,50 @@ static int omap3epfb_bfb_push_async(struct fb_info *info,
 }
 
 
+int omap3epfb_poll_temperature_safely(struct fb_info *info)
+{
+	struct omap3epfb_par *par = info->par;
+	struct timeval tv;
+	s64 nsec;
+	int t, st = 0;
+
+	if (par->pwr_sess->powered)
+		return st;
+
+	do_gettimeofday(&tv);
+
+	if (timeval_compare(&par->pmic_next_t_read_tv, &tv) < 0
+		&& !down_trylock(&par->screen_update_mutex)) {
+
+		/* Recheck - "powered" flag might have changed before locking
+		 * the screen update mutex. After locking we should be safe
+		 * because all pmic calls are within the screen
+		 * sequence.
+		 */
+		if (!par->pwr_sess->powered) {
+			dev_dbg(info->device, "PMIC looks unpowered - triggering temp acquisition\n");
+			st = pmic_get_temperature(par->pwr_sess, &t);
+			if (st == 0)
+				par->subfq.shrd.p->rq.temperature = t;
+			else if (st == -ENOSYS)
+				/* some PMIC backends lack a temperature sensor */
+				st = 0;
+			else
+				dev_err(info->device,
+						"error %d while reading temperature\n",
+						st);
+
+			nsec = timeval_to_ns(&tv);
+			nsec += PMIC_T_ACQ_SEC * (s64)NSEC_PER_SEC;
+			par->pmic_next_t_read_tv = ns_to_timeval(nsec);
+		}
+		up(&par->screen_update_mutex);
+	}
+
+	return st;
+}
+
+
 /**
 * DSP sleep sequence:
 * On @prepare send SLEEP to queue and check if DSP is still running.
@@ -1377,6 +1505,9 @@ int omap3epfb_send_dsp_pm(struct fb_info *info, bool sleep,
 	struct omap3epfb_bfb_update_area ba;
 	int dsp_running = par->subfq.shwr.p->wq.dsp_running_flag;
 
+	if (!sleep)
+		omap3epfb_poll_temperature_safely(info);
+
 	mb();
 	spin_lock(&par->bfb.que.pm_lock);
 
@@ -1386,8 +1517,6 @@ int omap3epfb_send_dsp_pm(struct fb_info *info, bool sleep,
 		 */
 		if (sleep) {
 			if (par->dsp_pm_sleep == false) {
-				/*area.wvfid = DSP_PM_SLEEP;
-				 st = omap3epfb_reqq_push_back_async(info, &area); //send sleep through daemon*/
 				ba.x0 = 0;
 				ba.x1 = 0;
 				ba.y0 = 0;
@@ -1396,64 +1525,54 @@ int omap3epfb_send_dsp_pm(struct fb_info *info, bool sleep,
 				st = omap3epfb_bfb_push_async(info, &ba, 1);
 				if(!st)
 					par->dsp_pm_sleep = true;
-		}
+			}
 
-		/* check DSP */
-		if (dsp_running)
-		st = 1;
-		else
-		st = 0;
-	} else {
-		//awake
-		if (par->dsp_pm_sleep) {
-			if(area == NULL) {
-				ba.x0 = 0;
-				ba.x1 = 0;
-				ba.y0 = 0;
-				ba.y1 = 0;
-				/* send emergency wake-up through blitter queue */
-				st = omap3epfb_bfb_push_async(info, &ba, 0);
-				pr_err("Awake called with NULL area!\n");
+			/* check DSP */
+			if (dsp_running)
+				st = 1;
+			else
+				st = 0;
+		} else {
+			//awake
+			if (par->dsp_pm_sleep) {
+				if(area == NULL) {
+					ba.x0 = 0;
+					ba.x1 = 0;
+					ba.y0 = 0;
+					ba.y1 = 0;
+					/* send emergency wake-up through blitter queue */
+					st = omap3epfb_bfb_push_async(info, &ba, 0);
+					pr_err("Awake called with NULL area!\n");
+				} else {
+					/* wake-up with actual passed area through blitter queue*/
+					st = omap3epfb_bfb_push_async(info,area,0);
+				}
+				if(!st)
+					par->dsp_pm_sleep = false;
+
+				spin_unlock(&par->bfb.que.pm_lock);
+
+				if(st) {
+					pr_err("Error inserting an item while wake-up!\n");
+					return st;
+				}
+				area_d.wvfid = DSP_PM_AWAKE;
+
+				/*wake-up through daemon*/
+				st = omap3epfb_reqq_push_back_async(info, &area_d);
+				if (st == -ENOBUFS) {
+					pr_err("Error inserting a reqq item while wake-up, trying with alternate wake-up!\n");
+					omap3epfb_send_recovery_signal();
+					return st;
+				}
+				return st;
 			} else {
-				/* wake-up with actual passed area through blitter queue*/
 				st = omap3epfb_bfb_push_async(info,area,0);
 			}
-			if(!st)
-				par->dsp_pm_sleep = false;
-
-			spin_unlock(&par->bfb.que.pm_lock);
-
-			if(st) {
-				pr_err("Error inserting an item while wake-up!\n");
-				return st;
-			}
-			area_d.wvfid = DSP_PM_AWAKE;
-#if 0
-			st = pmic_get_temperature(par->pwr_sess, &t);
-			if (st == 0)
-			par->subfq.shrd.p->rq.temperature = t;
-			else if (st == -ENOSYS)
-			/* some PMIC backends lack a temperature sensor */
-			st = 0;
-			else
-			dev_err(info->device,
-					"error %d while reading temperature\n", st);
-#endif
-			/*wake-up through daemon*/
-			st = omap3epfb_reqq_push_back_async(info, &area_d);
-			if (st == -ENOBUFS) {
-				pr_err("Error inserting a reqq item while wake-up, trying with alternate wake-up!\n");
-				omap3epfb_send_recovery_signal();
-				return st;
-			}
-			return st;
-		} else {
-			st = omap3epfb_bfb_push_async(info,area,0);
 		}
 	}
-}
-spin_unlock(&par->bfb.que.pm_lock);
-return st;
+	spin_unlock(&par->bfb.que.pm_lock);
+	return st;
 }
 
 
@@ -1550,25 +1669,6 @@ extern int omap3epfb_set_rotate(struct fb_info *info, int rotate)
 		mb();
 		if (!par->reg_daemon)
 			return 0;
-
-#if 0
-		/* the new request has been queued */
-		if (par->subfq.shwr.p->wq.last_subf_queued) {
-			/* ensure the temperature value in the
-			* shared memory is up-to-date */
-			int t;
-			st = pmic_get_temperature(par->pwr_sess, &t);
-			if (st == 0)
-				par->subfq.shrd.p->rq.temperature = t;
-			else if (st == -ENOSYS)
-				/* some PMIC backends lack a temperature sensor */
-				st = 0;
-			else
-				dev_err(info->device,
-				    "error %d while reading temperature\n",
-				    st);
-		}
-#endif
 
 		if (!st) {
 			st = omap3epfb_reqq_push_back_async(info, &area);

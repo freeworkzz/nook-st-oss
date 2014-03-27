@@ -103,7 +103,7 @@ struct papyrus_sess {
 #define PAPYRUS_ADDR_REVID		0x10
 
 
-#define PAPYRUS_MV_TO_VCOMREG(MV)	((MV) / 10)
+#define PAPYRUS_MV_TO_VCOMREG(MV)	(((MV) + 5) / 10)
 
 #define V3P3_EN_MASK	0x20
 #define PAPYRUS_HIGH_VOL_PWRDN_DELAY_MS 100
@@ -322,6 +322,31 @@ void papyrus_set_i2c_address(int address)
 
 }
 
+static int papyrus_detect_i2c_address(struct papyrus_sess *sess)
+{
+	int stat;
+	uint8_t revid;
+
+	// Try one address
+        papyrus2_i2c_addr = PAPYRUS2_1P0_I2C_ADDRESS;
+	stat = papyrus_hw_getreg(sess, PAPYRUS_ADDR_REVID, &revid);
+	if (!stat) {
+    		printk("papyrus i2c addr set to %x\n", papyrus2_i2c_addr);
+		return 0;  // First address was correct
+	}
+
+	// Try the other address
+        papyrus2_i2c_addr = PAPYRUS2_1P1_I2C_ADDRESS;
+	stat = papyrus_hw_getreg(sess, PAPYRUS_ADDR_REVID, &revid);
+	if (!stat) {
+    		printk("papyrus i2c addr set to %x\n", papyrus2_i2c_addr);
+		return 0;  // Second address was correct
+	}
+
+        pr_err("papyrus ERROR: could not find at the standard i2c addresses\n");
+	return stat;
+}
+
 static int papyrus_hw_init(struct papyrus_sess *sess, const char *chip_id)
 {
 	int stat = 0;
@@ -353,6 +378,9 @@ static int papyrus_hw_init(struct papyrus_sess *sess, const char *chip_id)
 		stat = -ENODEV;
 		goto free_gpios;
 	}
+	stat = papyrus_detect_i2c_address(sess);
+	if (stat < 0)
+		goto cleanup_i2c_adapter;
 
 	stat = papyrus_hw_get_revid(sess);
 	if (stat < 0)
@@ -609,6 +637,10 @@ static int papyrus_vcom_switch(struct pmic_sess *pmsess, bool state)
 
 	stat = papyrus_hw_setreg(sess, PAPYRUS_ADDR_ENABLE,
 						sess->enable_reg_shadow);
+
+	/* account for delays in i2c transactions and VCOM LDO startup */
+	if (state)
+		msleep(1);
 
 	return stat;
 }

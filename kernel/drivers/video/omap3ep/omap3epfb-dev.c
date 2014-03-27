@@ -206,6 +206,73 @@ static ssize_t emptysync_store(struct device *dev,
 	return size;
 }
 
+static ssize_t vcom_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", omap3epfb_vcom_modparam);
+}
+
+static ssize_t vcom_store(struct device *dev,
+				struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct fb_info *info = dev_get_drvdata(dev);
+	struct omap3epfb_par *par = info->par;
+	int val;
+	int retval;
+
+	val = simple_strtol(buf, NULL, 0);
+	pr_info("Setting VCOM to %d mV\n", val);
+
+	retval = pmic_set_vcom(par->pwr_sess, val);
+	if (retval) {
+		pr_err("VCOM voltage %d mV is invalid!\n", val);
+	} else {
+		pr_info("VCOM set to %d mV!\n", val);
+		omap3epfb_vcom_modparam = val;
+	}
+
+	return size;
+}
+
+static ssize_t temp_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct fb_info *info = dev_get_drvdata(dev);
+	struct omap3epfb_par *par = info->par;
+	int temp = 0;
+	int retval = 0;
+
+	retval = pmic_get_temperature(par->pwr_sess, &temp);
+	if(retval){
+		pr_err("EPD temperature could not be read!\n");
+	}
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", temp);
+}
+
+static ssize_t temp_offset_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct fb_info *info = dev_get_drvdata(dev);
+	struct omap3epfb_par *par = info->par;
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", par->pwr_sess->temp_man_offset);
+}
+
+static ssize_t temp_offset_store(struct device *dev,
+				struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct fb_info *info = dev_get_drvdata(dev);
+	struct omap3epfb_par *par = info->par;
+	int val;
+
+	val = simple_strtol(buf, NULL, 0);
+	pr_info("EPD temperature offset set to %d C\n", val);
+	par->pwr_sess->temp_man_offset = val;
+
+	return size;
+}
+
 
 #ifdef CONFIG_FB_OMAP3EP_MANAGE_BORDER
 static ssize_t border_show(struct device *dev,
@@ -246,6 +313,9 @@ static DEVICE_ATTR(border, S_IRUGO|S_IWUSR, border_show, border_store);
 
 static DEVICE_ATTR(daemonconn, S_IRUGO, daemonconn_show, NULL);
 static DEVICE_ATTR(emptysync, S_IRUGO|S_IWUSR, emptysync_show, emptysync_store);
+static DEVICE_ATTR(epd_vcom, S_IRUGO|S_IWUSR, vcom_show, vcom_store);
+static DEVICE_ATTR(epd_temp, S_IRUGO, temp_show, NULL);
+static DEVICE_ATTR(epd_temp_offset, S_IRUGO|S_IWUSR, temp_offset_show, temp_offset_store);
 
 static struct device_attribute *epd_sysfs_attrs[] = {
 	&dev_attr_daemonconn,
@@ -253,6 +323,9 @@ static struct device_attribute *epd_sysfs_attrs[] = {
 	&dev_attr_border,
 #endif
 	&dev_attr_emptysync,
+	&dev_attr_epd_vcom,
+	&dev_attr_epd_temp,
+	&dev_attr_epd_temp_offset,
 	NULL
 };
 
@@ -378,12 +451,14 @@ int omap3epfb_reqq_pop_front_sync(struct fb_info *info,
 static void omap3epfb_reg_daemon(struct fb_info *info,bool r)
 {
 	struct omap3epfb_par *par = info->par;
-	int t;
-	if(r){
-		if (pmic_get_temperature(par->pwr_sess, &t) == 0){
-			par->subfq.shrd.p->rq.temperature = t;
-		}
-	}
+
+	/*
+	 * Prevent printk noise and just feed the rendering back-end
+	 * with correct temperature before initialization.
+	 */
+	if (r)
+		omap3epfb_poll_temperature_safely(info);
+
 	par->reg_daemon = r;
 }
 
@@ -884,6 +959,13 @@ static int omap3epfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long
 			}
 			break;
 
+		case OMAP3EPFB_TEMP_ADJUST:
+			if (get_user(par->pwr_sess->temp_man_offset,
+					(int __user *)arg))
+				stat = -EFAULT;
+			else
+				stat = 0;
+			break;
 
 		case OMAP3EPFB_IO_GET_UPDATE_AREA:
 			stat = omap3epfb_reqq_pop_front_async(info,
@@ -1671,7 +1753,7 @@ static int omap3epfb_resume(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops omap3epfb_pm_ops = {
+static struct dev_pm_ops omap3epfb_pm_ops = {
 	.prepare	= omap3epfb_prepare,
 	.suspend	= omap3epfb_suspend,
 	.resume		= omap3epfb_resume,

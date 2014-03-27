@@ -281,7 +281,7 @@ struct twl4030_usb {
 	enum twl4030_usb_mode	usb_mode;
 
 	int			irq;
-	u8			linkstat;
+	enum linkstat		linkstat;
 	u8			asleep;
 	bool			irq_enabled;
 	struct delayed_work	dwork;
@@ -394,7 +394,7 @@ twl4030_usb_clear_bits(struct twl4030_usb *twl, u8 reg, u8 bits)
 static enum linkstat twl4030_usb_linkstat(struct twl4030_usb *twl)
 {
 	int	status;
-	int	linkstat = USB_LINK_UNKNOWN;
+	enum linkstat linkstat = USB_LINK_UNKNOWN;
 
 	/*
 	 * For ID/VBUS sensing, see manual section 15.4.8 ...
@@ -491,6 +491,18 @@ static void twl4030_i2c_access(struct twl4030_usb *twl, int on)
 	}
 }
 
+static void __twl4030_phy_power(struct twl4030_usb *twl, int on)
+{
+	u8 pwr = (u8)twl4030_usb_read(twl, PHY_PWR_CTRL);
+
+	if (on)
+		pwr &= ~PHY_PWR_PHYPWD;
+	else
+		pwr |= PHY_PWR_PHYPWD;
+
+	WARN_ON(twl4030_usb_write_verify(twl, PHY_PWR_CTRL, pwr) < 0);
+}
+
 static void twl4030_phy_power(struct twl4030_usb *twl, int on)
 {
 	u8 pwr;
@@ -509,15 +521,13 @@ static void twl4030_phy_power(struct twl4030_usb *twl, int on)
 		twl4030_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, 0,
 							VUSB_DEDICATED2);
 		regulator_enable(twl->usb1v5);
-		pwr &= ~PHY_PWR_PHYPWD;
-		WARN_ON(twl4030_usb_write_verify(twl, PHY_PWR_CTRL, pwr) < 0);
+		__twl4030_phy_power(twl, 1);
 		twl4030_usb_write(twl, PHY_CLK_CTRL,
 				  twl4030_usb_read(twl, PHY_CLK_CTRL) |
 					(PHY_CLK_CTRL_CLOCKGATING_EN |
 						PHY_CLK_CTRL_CLK32K_EN));
 	} else  {
-		pwr |= PHY_PWR_PHYPWD;
-		WARN_ON(twl4030_usb_write_verify(twl, PHY_PWR_CTRL, pwr) < 0);
+		__twl4030_phy_power(twl, 0);
 		regulator_disable(twl->usb1v5);
 		regulator_disable(twl->usb1v8);
 		regulator_disable(twl->usb3v1);
@@ -539,6 +549,7 @@ static void twl4030_phy_suspend(struct twl4030_usb *twl, int controller_off)
 
 	twl4030_phy_power(twl, 0);
 	twl->asleep = 1;
+	dev_dbg(twl->dev, "%s\n", __func__);
 }
 
 static void twl4030_phy_resume(struct twl4030_usb *twl)
@@ -571,8 +582,8 @@ static int twl4030_usb_ldo_init(struct twl4030_usb *twl)
 	twl4030_i2c_write_u8(TWL4030_MODULE_PM_MASTER, key1, PROTECT_KEY);
 	twl4030_i2c_write_u8(TWL4030_MODULE_PM_MASTER, key2, PROTECT_KEY);
 
-	/* put VUSB3V1 LDO in active state */
-	twl4030_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, 0, VUSB_DEDICATED2);
+	/* Keep VUSB3V1 LDO in sleep state until VBUS/ID change detected*/
+	/* twl4030_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, 0, VUSB_DEDICATED2); */
 
 	/* input to VUSB3V1 LDO is from VBAT, not VBUS */
 	twl4030_i2c_write_u8(TWL4030_MODULE_PM_RECEIVER, 0x14, VUSB_DEDICATED1);
@@ -645,6 +656,19 @@ static irqreturn_t twl4030_usb_irq(int irq, void *_twl)
 	 */
 	schedule_delayed_work(&twl->dwork, bottom_timeout * HZ);
 	return IRQ_HANDLED;
+}
+
+static void twl4030_usb_phy_init(struct twl4030_usb *twl)
+{
+	const enum linkstat status = twl4030_usb_linkstat(twl);
+	if (status == USB_LINK_NONE) {
+		__twl4030_phy_power(twl, 0);
+		twl->asleep = 1;
+	} else {
+		twl4030_phy_suspend(twl, 0);
+		twl4030_usb_irq(twl->irq, twl);
+	}
+	sysfs_notify(&twl->dev->kobj, NULL, "vbus");
 }
 
 static int twl4030_set_suspend(struct otg_transceiver *x, int suspend)
@@ -897,16 +921,10 @@ static int __init twl4030_usb_probe(struct platform_device *pdev)
 		return status;
 	}
 
-	/* The IRQ handler just handles changes from the previous states
-	 * of the ID and VBUS pins ... in probe() we must initialize that
-	 * previous state.  The easy way:  fake an IRQ.
-	 *
-	 * REVISIT:  a real IRQ might have happened already, if PREEMPT is
-	 * enabled.  Else the IRQ may not yet be configured or enabled,
-	 * because of scheduling delays.
+	/* Power down phy or make it work according to
+	 * current link state.
 	 */
-	twl4030_phy_suspend(twl, 0);
-	twl4030_usb_irq(twl->irq, twl);
+	twl4030_usb_phy_init(twl);
 
 	dev_info(&pdev->dev, "Initialized TWL4030 USB module\n");
 	return 0;
@@ -938,7 +956,9 @@ static int __exit twl4030_usb_remove(struct platform_device *pdev)
 	/* disable complete OTG block */
 	twl4030_usb_clear_bits(twl, POWER_CTRL, POWER_CTRL_OTG_ENAB);
 
-	twl4030_phy_power(twl, 0);
+	if (!twl->asleep)
+		twl4030_phy_power(twl, 0);
+
 	regulator_put(twl->usb1v5);
 	regulator_put(twl->usb1v8);
 	regulator_put(twl->usb3v1);

@@ -30,8 +30,9 @@
 #include <asm/unaligned.h>
 #include <linux/timer.h>
 #include <linux/jiffies.h>
+#include <linux/rwsem.h>
 
-#define DRIVER_VERSION			"1.0.1"
+#define DRIVER_VERSION			"1.1.0"
 
 /*
  * Polling interval, in milliseconds.
@@ -60,6 +61,7 @@
 #define BQ72520_CONTROL_HW_VERSION   (0x0003)
 
 
+#define BQ27510_REG_ATRATE		0x02
 #define BQ27510_REG_TEMP		0x06
 #define BQ27510_REG_VOLT		0x08
 #define BQ27510_REG_RSOC		0x2C /* Relative State-of-Charge */
@@ -74,6 +76,10 @@
 #define BQ27510_REG_DATALOG_BUFFER	0x34
 #define BQ27510_REG_NOMINAL_CAPACITY	0x0C
 #endif /* CONFIG_BATTERY_BQ27520 */
+
+#define BQ27510_REG_BUFFER_START	BQ27510_REG_ATRATE
+#define BQ27510_REG_BUFFER_SIZE		0x36
+
 #define BAT_DET_FLAG_BIT		3
 #define OFFSET_KELVIN_CELSIUS		273
 #define OFFSET_KELVIN_CELSIUS_DECI	2731
@@ -107,10 +113,6 @@ static DEFINE_IDR(battery_id);
 static DEFINE_MUTEX(battery_mutex);
 
 struct bq27510_device_info;
-struct bq27510_access_methods {
-	int (*read)(u8 reg, int *rt_value, int b_single,
-		struct bq27510_device_info *di);
-};
 
 struct bq27510_device_info {
 	struct device 			*dev;
@@ -122,17 +124,24 @@ struct bq27510_device_info {
 	int                     	time_to_empty;
 	int                     	time_to_full;
     int rapid_poll_cycle;
-	struct bq27510_access_methods	*bus;
 	struct power_supply		bat;
 	struct power_supply		usb;
 	struct power_supply		wall;
 
 	struct i2c_client		*client;
+	struct delayed_work		bat_work;
+	struct rw_semaphore		reglock;
+
+	/* Cached register values. Updated upon IRQ or poll timer activation */
+	uint8_t				regbuf[BQ27510_REG_BUFFER_SIZE];
+
+	/* Cached property registers - snatched upon device probe */
+	int				sys_device_type;
+	int				sys_fw_version;
+	int				sys_hw_version;
 };
-static int bq27200_read_control(u16 reg, int *rt_value, struct bq27510_device_info *di);
 static int bq27510_battery_supply_prop_present(struct bq27510_device_info *di);
 
-static struct delayed_work bat_work;
 
 #if defined(CONFIG_MACH_OMAP3621_GOSSAMER)
 enum {
@@ -232,32 +241,14 @@ void bq27x10_charger_type(int limit)
 	if (limit == AC_CURRENT_LIMIT)
 		bq27x10_type = POWER_SUPPLY_TYPE_MAINS;
 
-	if (local_di)
-	{
-    	cancel_delayed_work_sync(&bat_work);
-        local_di->rapid_poll_cycle = 0;
-		schedule_delayed_work(&bat_work, msecs_to_jiffies(T_POLL_PLUG_MS));
+	if (local_di) {
+		cancel_delayed_work_sync(&local_di->bat_work);
+		local_di->rapid_poll_cycle = 0;
+		schedule_delayed_work(&local_di->bat_work,
+					msecs_to_jiffies(T_POLL_PLUG_MS));
 	}
 }
 EXPORT_SYMBOL(bq27x10_charger_type);
-
-static void bq27x10_bat_work(struct work_struct *work)
-{
-    int polling_interval = T_POLL_MS;
-
-	if (local_di)
-	{
-		power_supply_changed(&local_di->bat);
-		power_supply_changed(&local_di->usb);
-		power_supply_changed(&local_di->wall);
-
-        if (local_di->rapid_poll_cycle < T_POLL_PLUG_MAX) {
-            polling_interval = T_POLL_PLUG_MS;
-            ++local_di->rapid_poll_cycle;
-        }
-    }
-	schedule_delayed_work(&bat_work, msecs_to_jiffies(polling_interval));
-}
 
 #if defined(CONFIG_MACH_OMAP3621_GOSSAMER)
 static unsigned int g_pause_i2c = 1;
@@ -287,20 +278,121 @@ static struct device_attribute dev_attr_pause_i2c = {
 	.store = pause_i2c_store
 
 };
+
+static ssize_t bus_disable_store(struct device *dev,
+							   struct device_attribute *attr,
+							   const char *buf, size_t count) {
+	int polling_interval = T_POLL_PLUG_MS;
+	if (buf[0] == '0') {
+		if (local_di) {
+			schedule_delayed_work(&local_di->bat_work, msecs_to_jiffies(polling_interval));
+		}
+	}
+	else {
+		if (local_di) {
+			cancel_delayed_work_sync(&local_di->bat_work);
+		}
+	}
+	return count;
+}
+static struct device_attribute dev_attr_bus_disable = {
+	.attr	= {
+		.name = "bus_disable",
+		.mode = 0220
+		},
+	.store = bus_disable_store
+
+};
 #endif
+
 /*
- * Common code for bq27x10 devices
+ * Read all registers and save them to a local buffer. This minimizes
+ * the overall I2C transfers, and prevents BQ lockup due to excessive
+ * I2C communication.
+ */
+static int bq27x10_read_registers(struct bq27510_device_info *di)
+{
+	struct i2c_client *client = di->client;
+	int stat;
+	uint8_t regaddr_start = BQ27510_REG_BUFFER_START;
+	struct i2c_msg msgs[] = {
+		{
+			.addr = client->addr,
+			.flags = 0,
+			.len = 1,
+			.buf = &regaddr_start,
+		},
+		{
+			.addr = client->addr,
+			.flags = I2C_M_RD,
+			.len = BQ27510_REG_BUFFER_SIZE - BQ27510_REG_BUFFER_START,
+			.buf = di->regbuf + BQ27510_REG_BUFFER_START,
+		}
+	};
+
+
+#if defined(CONFIG_MACH_OMAP3621_GOSSAMER)
+	if (g_pause_i2c == 0)
+		return -EBUSY;
+#endif
+	down_write(&di->reglock);
+	stat = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
+	up_write(&di->reglock);
+
+	if (stat < 0)
+		dev_err(di->dev, "I2C read error: %d\n", stat);
+	else if (stat != ARRAY_SIZE(msgs)) {
+		dev_err(di->dev, "I2C read N mismatch: %d\n", stat);
+		stat = -EIO;
+	} else
+		stat = 0;
+
+	return stat;
+}
+
+static void bq27x10_bat_work(struct work_struct *work)
+{
+	struct delayed_work *dwork = (void *)work;
+	int polling_interval = T_POLL_MS;
+	struct bq27510_device_info *di;
+
+	di = container_of(dwork, struct bq27510_device_info, bat_work);
+
+	if (local_di) {
+		bq27x10_read_registers(di);
+		power_supply_changed(&di->bat);
+		power_supply_changed(&di->usb);
+		power_supply_changed(&di->wall);
+
+		if (di->rapid_poll_cycle < T_POLL_PLUG_MAX) {
+			polling_interval = T_POLL_PLUG_MS;
+			++di->rapid_poll_cycle;
+		}
+	}
+	schedule_delayed_work(&di->bat_work,
+				msecs_to_jiffies(polling_interval));
+}
+
+/*
+ * Common code for bq27x10 devices - get cached register value.
  */
 static int bq27x10_read(u8 reg, int *rt_value, int b_single,
 			struct bq27510_device_info *di)
 {
-	int ret;
-#if defined(CONFIG_MACH_OMAP3621_GOSSAMER)
-	if (g_pause_i2c == 0)
-		return -1;
-#endif
-	ret = di->bus->read(reg, rt_value, b_single, di);
-	return ret;
+	struct i2c_client *client = di->client;
+
+	if (!client->adapter)
+		return -ENODEV;
+
+	if (b_single)
+		*rt_value = di->regbuf[reg];
+	else {
+		down_read(&di->reglock);
+		*rt_value = di->regbuf[reg] + (di->regbuf[reg+1] << 8);
+		up_read(&di->reglock);
+	}
+
+	return 0;
 }
 
 /*
@@ -376,11 +468,12 @@ static int bq27510_battery_rsoc(struct bq27510_device_info *di)
 		return 100;
 	}
 
-    if (rsoc == 0 ) {
-        if (!bq27510_battery_supply_prop_present(di)) {
-            rsoc=100;
-        }
-    }
+	if ((rsoc == 0) || (rsoc == 0xffff) ) {
+		if (!bq27510_battery_supply_prop_present(di)) {
+			rsoc=100;
+		}
+	}
+
 	if (rsoc < 0){
 		rsoc = 1;
 	}
@@ -788,27 +881,21 @@ static int bq27200_read_control(u16 reg, int *rt_value, struct bq27510_device_in
 static ssize_t bq275200_get_device_type(struct device *dev, struct device_attribute *attr, char *buf)
 {
     struct bq27510_device_info *di = dev_get_drvdata(dev->parent);
-    int rt=0;
-    bq27200_read_control(BQ72520_CONTROL_DEVICE_TYPE, &rt, di);
-    return sprintf(buf, "0x%04x\n", rt);
+    return sprintf(buf, "0x%04x\n", di->sys_device_type);
 }
 static DEVICE_ATTR(device_type, S_IRUGO, bq275200_get_device_type, NULL);
 
 static ssize_t bq275200_get_fw_version(struct device *dev, struct device_attribute *attr, char *buf)
 {
     struct bq27510_device_info *di = dev_get_drvdata(dev->parent);
-    int rt=0;
-    bq27200_read_control(BQ72520_CONTROL_FW_VERSION, &rt, di);
-    return sprintf(buf, "0x%04x\n", rt);
+    return sprintf(buf, "0x%04x\n", di->sys_fw_version);
 }
 static DEVICE_ATTR(fw_version, S_IRUGO, bq275200_get_fw_version, NULL);
 
 static ssize_t bq275200_get_hw_version(struct device *dev, struct device_attribute *attr, char *buf)
 {
     struct bq27510_device_info *di = dev_get_drvdata(dev->parent);
-    int rt=0;
-    bq27200_read_control(BQ72520_CONTROL_HW_VERSION, &rt, di);
-    return sprintf(buf, "0x%04x\n", rt);
+    return sprintf(buf, "0x%04x\n", di->sys_hw_version);
 }
 
 static DEVICE_ATTR(hw_version, S_IRUGO, bq275200_get_hw_version, NULL);
@@ -852,48 +939,6 @@ static void bq27510_powersupply_wall_init(struct bq27510_device_info *di)
 	di->wall.external_power_changed = NULL;
 }
 
-/*
- * Read by I2C.
- */
-static int bq27510_read(u8 reg, int *rt_value, int b_single,
-			struct bq27510_device_info *di)
-{
-	struct i2c_client *client = di->client;
-	struct i2c_msg msg[2];
-	unsigned char data[2];
-	int err;
-	if (!client->adapter)
-		return -ENODEV;
-
-	msg[0].addr = client->addr;
-	msg[0].flags = 0;
-	msg[0].len = 1;
-	msg[0].buf = &reg;
-
-    msg[1].addr = client->addr;
-    msg[1].flags = I2C_M_RD;
-    // Not the cleanest way for sure
-    msg[1].len = (b_single) ? 1 : 2;
-    msg[1].buf = data;
-
-    // do this as single transfer in case
-    // someone else is also trying to use the bus
-    err = i2c_transfer(client->adapter, msg, 2);	
-
-    // err is the number of messages executed,
-    // we sent 2 and expect 2 back
-    if (err == 2) {
-        if(b_single) {
-            *rt_value = data[0];
-        } else {
-		    *rt_value = data[0]+(data[1]<<8);
-		}
-
-        err = 0;
-	}
-
-	return err;
-}
 
 /*
  *
@@ -903,7 +948,6 @@ static int bq27510_battery_probe(struct i2c_client *client,
 {
 	char *name;
 	struct bq27510_device_info *di;
-	struct bq27510_access_methods *bus;
 	int num;
 	int retval = 0;
 
@@ -931,14 +975,6 @@ static int bq27510_battery_probe(struct i2c_client *client,
 	}
 	di->id = num;
 
-	bus = kzalloc(sizeof(*bus), GFP_KERNEL);
-	if (!bus) {
-		dev_err(&client->dev, "failed to allocate access method "
-					"data\n");
-		retval = -ENOMEM;
-		goto batt_failed_3;
-	}
-
 	i2c_set_clientdata(client, di);
 	di->dev = &client->dev;
 
@@ -946,8 +982,8 @@ static int bq27510_battery_probe(struct i2c_client *client,
 	di->usb.name = "bq27510-usb";
 	di->wall.name = "bq27510-wall";
 
-	bus->read = bq27510_read;
-	di->bus = bus;
+	init_rwsem(&di->reglock);
+
 	di->client = client;
 #if defined(CONFIG_MACH_OMAP3621_GOSSAMER)
 	manufacturer_id = get_gossamer_battery_manufacturer();
@@ -959,32 +995,54 @@ static int bq27510_battery_probe(struct i2c_client *client,
 	retval = power_supply_register(&client->dev, &di->bat);
 	if (retval) {
 		dev_err(&client->dev, "failed to register battery\n");
-		goto batt_failed_4;
+		goto batt_failed_3;
 	}
 	retval = power_supply_register(&client->dev, &di->usb);
 	if (retval) {
 		dev_err(&client->dev, "failed to register battery(usb)\n");
 		power_supply_unregister(&di->bat);
-		goto batt_failed_4;
+		goto batt_failed_3;
 	}
 	retval = power_supply_register(&client->dev, &di->wall);
 	if (retval) {
 		dev_err(&client->dev, "failed to register battery(wall)\n");
 		power_supply_unregister(&di->bat);
 		power_supply_unregister(&di->usb);
-		goto batt_failed_4;
+		goto batt_failed_3;
 	}
 
 	local_di = di;
 
-	INIT_DELAYED_WORK_DEFERRABLE(&bat_work, bq27x10_bat_work);
-	schedule_delayed_work(&bat_work, msecs_to_jiffies(T_POLL_MS));
+	/* Cache static values */
+	retval = bq27200_read_control(BQ72520_CONTROL_DEVICE_TYPE,
+					&di->sys_device_type, di);
+	if (retval < 0)
+		goto batt_failed_4;
+	retval = bq27200_read_control(BQ72520_CONTROL_HW_VERSION,
+					&di->sys_hw_version, di);
+	if (retval < 0)
+		goto batt_failed_4;
+	retval = bq27200_read_control(BQ72520_CONTROL_FW_VERSION,
+					&di->sys_fw_version, di);
+	if (retval < 0)
+		goto batt_failed_4;
+
+	/* start with valid contents in register cache */
+	retval = bq27x10_read_registers(di);
+	if (retval < 0)
+		goto batt_failed_4;
+
+	INIT_DELAYED_WORK_DEFERRABLE(&di->bat_work, bq27x10_bat_work);
+	schedule_delayed_work(&di->bat_work, msecs_to_jiffies(T_POLL_MS));
 
 	dev_info(&client->dev, "support ver. %s enabled\n", DRIVER_VERSION);
 #if defined(CONFIG_MACH_OMAP3621_GOSSAMER)
 	retval = device_create_file(&client->dev, &dev_attr_pause_i2c);
 	if (retval)
 		printk(KERN_ERR "Failed to create pause_i2c sysfs entry\n");
+	retval = device_create_file(&client->dev, &dev_attr_bus_disable);
+	if (retval)
+		printk(KERN_ERR "Failed to create bus_disable sysfs entry\n");
 #endif
     retval = device_create_file(di->bat.dev, &dev_attr_device_type);
     if (retval)
@@ -997,8 +1055,11 @@ static int bq27510_battery_probe(struct i2c_client *client,
         printk(KERN_ERR "Failed to create fw_version sysfs entry\n");
 
     return 0;
+
 batt_failed_4:
-	kfree(bus);
+	power_supply_unregister(&di->bat);
+	power_supply_unregister(&di->wall);
+	power_supply_unregister(&di->usb);
 batt_failed_3:
 	kfree(di);
 batt_failed_2:
@@ -1023,6 +1084,7 @@ static int bq27510_battery_remove(struct i2c_client *client)
     device_remove_file(di->bat.dev, &dev_attr_device_type);
 #if defined(CONFIG_MACH_OMAP3621_GOSSAMER)
     device_remove_file(&client->dev, &dev_attr_pause_i2c);
+    device_remove_file(&client->dev, &dev_attr_bus_disable);
 #endif
 	power_supply_unregister(&di->bat);
 	power_supply_unregister(&di->usb);
@@ -1040,6 +1102,7 @@ static int bq27510_battery_remove(struct i2c_client *client)
 	return 0;
 }
 
+
 /*
  * Module stuff
  */
@@ -1051,8 +1114,10 @@ static const struct i2c_device_id bq27510_id[] = {
 
 static void bq27510_battery_shutdown(struct i2c_client *client)
 {
-    dev_dbg(&client->dev, "shutting down");
-    cancel_delayed_work_sync(&bat_work);
+	struct bq27510_device_info *di = i2c_get_clientdata(client);
+
+	dev_dbg(&client->dev, "shutting down");
+	cancel_delayed_work_sync(&di->bat_work);
 }
 
 
@@ -1090,6 +1155,13 @@ static int bq27510_battery_resume(struct i2c_client *client)
     temp= bq27510_battery_temperature(di)-2730;
     cap = bq27510_battery_rsoc(di);
     printk("batresume  %d %d %d %d %d\n",volts,curr,cap,ncap, temp/10);
+
+	cancel_delayed_work_sync(&local_di->bat_work);
+	di->rapid_poll_cycle = 0;
+	schedule_delayed_work(&di->bat_work,
+			msecs_to_jiffies(T_POLL_PLUG_MS));
+
+
 	return 0;
 }
 
@@ -1101,11 +1173,9 @@ static struct i2c_driver bq27510_battery_driver = {
 	},
 	.probe = bq27510_battery_probe,
 	.remove = bq27510_battery_remove,
-
-    .suspend  = bq27510_battery_suspend,
-    .resume	  = bq27510_battery_resume,
-
-    .shutdown = bq27510_battery_shutdown,
+	.suspend  = bq27510_battery_suspend,
+	.resume	  = bq27510_battery_resume,
+	.shutdown = bq27510_battery_shutdown,
 	.id_table = bq27510_id,
 };
 

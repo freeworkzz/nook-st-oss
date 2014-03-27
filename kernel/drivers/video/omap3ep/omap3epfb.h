@@ -177,6 +177,15 @@ struct omap3epfb_par {
 		bool bursty_alive;
 		bool bursty_keepalive;
 #endif
+#if defined(CONFIG_FB_OMAP3EP_MANAGE_BORDER)
+		/* Work used to change the border color
+		 * requests
+		 */
+		struct delayed_work border_work;
+		struct workqueue_struct *border_workq;
+		int current_border_color;
+		int new_border_color;
+#endif
 	} subfq;
 
 	struct {
@@ -232,6 +241,8 @@ struct omap3epfb_par {
 
 	struct pmic_sess *pwr_sess;
 	enum omap3epfb_hwstate hwstate;
+	/* Jiffies are not incremented during suspend, so use timeval. */
+	struct timeval pmic_next_t_read_tv;
 
 	uint32_t pseudo_palette[64];	/* dummy required by fb framework */
 
@@ -268,5 +279,7 @@ extern int omap3epfb_reqq_purge(struct fb_info *info);
 extern int omap3epfb_send_dsp_pm(struct fb_info *info,bool sleep,struct omap3epfb_bfb_update_area *area);
 
 extern int omap3epfb_send_recovery_signal(void);
+
+extern int omap3epfb_poll_temperature_safely(struct fb_info *info);
 
 #endif	/* OMAP3EPFB_H */
